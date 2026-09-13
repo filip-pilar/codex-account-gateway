@@ -1,50 +1,50 @@
 # codex-gateway
 
-A small, dependency-free CLI that gives Codex an isolated ChatGPT backing account through a loopback gateway. Give your agent this repository and ask it to follow the setup recipe below.
+Loopback HTTP gateway for Codex, authenticated through an isolated official Codex CLI profile. One backing ChatGPT account per profile.
 
-The underlying compatibility approach has extensive live CLI evidence, including tools, subagents, compaction, web search, and native image generation/editing. This extracted package is verified with local fixtures; it has not yet had its own live smoke test. See [compatibility](docs/compatibility.md). This is not an official OpenAI product or a general OpenAI API replacement.
+## Requirements
 
-## Agent setup recipe
+- macOS or Linux; Node >=22.15; official `codex` on PATH.
+- Backing account with access to the selected model and tools.
+- No dependencies or build step. Run commands from the repository directory.
 
-Run commands from the cloned repository. No `npm install`, build, global executable link, or source edits are needed. macOS and Linux are the intended platforms.
+## Setup
 
-1. **Check prerequisites and select a profile.** Node >=22.15 is required for native zstd. The official `codex` CLI must be on PATH. Historical live evidence used **0.149.1**; other CLI versions are not verified. Do not install or upgrade a global CLI implicitly.
+Use `--json` and branch on `code` and `next_action`. `login` is interactive. Exit codes: `0` success, `1` unmet condition or operational failure, `2` invalid arguments. Full contract: [docs/cli.md](docs/cli.md).
+
+1. Check prerequisites:
 
    ```sh
    node --version
    node src/cli.mjs doctor --json
    ```
 
-   The default private profile is `~/.local/share/codex-gateway`. For a different backing account, set `CODEX_GATEWAY_HOME` to a separate absolute private directory on every gateway command. Keep it outside this repository and separate from all client profiles. One backing account per profile; no account rotation.
+   Default backing state: `~/.local/share/codex-gateway`. To select another profile, set `CODEX_GATEWAY_HOME` to an absolute private directory for every gateway command. Keep backing state and client state separate and outside the repository. Default port: `8787`.
 
-   `doctor` returns all local checks and a `next_action`. Missing credentials on first setup are expected. No upstream request occurs. The default port is 8787; if occupied, select a free port >=1024 and pass the same `--port` to `start` and `setup`. A bind conflict is reported safely; choose another port and retry.
-
-2. **Authenticate the backing account through the official CLI.** This is the user interaction step: ask the user to complete the official login and select the intended backing account.
+2. If credentials are missing, have the user complete the official login with the intended backing account:
 
    ```sh
    node src/cli.mjs login
    ```
 
-   Login uses the gateway's private `CODEX_HOME` and file credential store. Never copy another profile's authentication files. Do not capture login output as diagnostics. On `login_required` or upstream `upstream_login_expired`, run this command again; automatic refresh is not implemented.
-
-3. **Start and confirm local readiness.** Background mode waits for the child to bind and publish its instance state before reporting success.
+3. Start the gateway:
 
    ```sh
    node src/cli.mjs start --background --json
    node src/cli.mjs status --json
    ```
 
-   Expect `started` or `already_running`, then `running`. Without `--background`, the process runs in the foreground until Ctrl-C or `stop`. Background mode survives the launching shell but is not an OS service: it does not restart after reboot or failure.
+   Expected codes: `started` or `already_running`, then `running`. Omit `--background` for foreground operation. For another port, pass `--port NUMBER` to both `start` and `setup`; allowed range is 1024–65535.
 
-4. **Create a separate client profile.** Choose a model available to the backing account and a **new absolute directory** whose parent exists. Replace the placeholders below; do not use the gateway state directory or an existing client profile.
+4. Generate client configuration. Replace `MODEL` with an account-supported model and the path with a new absolute directory whose parent exists:
 
    ```sh
    node src/cli.mjs setup --model MODEL --client-dir /absolute/path/to/new-client --json
    ```
 
-   Expect `configuration_created`. The result includes the configuration path and a shell-quoted `launch_command`, plus structured executable/environment fields. Run that command to open the isolated client when requested. Existing plugins/settings are not copied. Configuration selects low reasoning, disables client retries, and disables startup update checks. Without `--client-dir`, `setup` only returns the TOML for review.
+   Expected code: `configuration_created`. Launch the client using the returned `launch` fields or `launch_command` when requested. Existing directories are rejected. Omit `--client-dir` to return TOML without writing files. Generated settings use low reasoning and disable retries and startup update checks.
 
-5. **Verify locally and report the boundary.**
+5. Verify locally:
 
    ```sh
    node src/cli.mjs doctor --json
@@ -52,34 +52,34 @@ Run commands from the cloned repository. No `npm install`, build, global executa
    npm run check
    ```
 
-   `local_ready` means prerequisites, credential presence, runtime condition, and port checks passed. `running` means this profile's authenticated control endpoint answered. Neither proves token validity, account entitlement, or successful upstream inference. Report “locally ready; upstream not checked.”
+   Expected codes: `local_ready`, `running`; checks exit `0`. Credential presence and local liveness do not establish upstream readiness. Real inference requires explicit authorization; see [verification](docs/verification.md).
 
-6. **Only with explicit authorization, perform one live smoke request.** See [verification](docs/verification.md). Setup does not require spending quota, and the historical suite should not be rerun by default.
-
-To stop the selected profile:
+## Operation
 
 ```sh
 node src/cli.mjs stop --json
 ```
 
-## CLI contract and recovery
+| Condition | Action |
+|---|---|
+| `login_required` or `upstream_login_expired` | Repeat official isolated `login` |
+| `port_in_use` | Select another port; use it in both start and setup |
+| `stale` | Run `start` to recover or `stop` to remove stale runtime state |
+| `runtime_unavailable`, `unsafe_runtime`, `lifecycle_busy` | Follow [recovery instructions](docs/cli.md#conservative-recovery); do not signal unverified PIDs or delete backing credentials |
 
-See [CLI reference](docs/cli.md) for options, JSON fields, exit codes, and safe recovery. Agents should use `--json`, stable `code` fields, and structured launch data rather than parse prose or read private runtime files. `login` is intentionally interactive.
+Background mode has no restart supervisor. Shutdown cancels active requests. Authentication refresh remains manual and owned by the official CLI.
 
-Ordinary process crashes leave state that `start` safely reclaims once the recorded PID is absent; `stop` can also remove that stale state. An unverifiable live PID, corrupt/legacy state, or interrupted lifecycle mutation fails closed with a recovery action. Never kill an arbitrary PID or delete the backing `codex` directory to repair runtime state.
+## Boundary
 
-## Protocol and privacy
+- Routes: streaming `/v1/responses`, `/v1/alpha/search`, `/v1/images/generations`, `/v1/images/edits`.
+- Original request bytes, gzip/zstd encoding, allowlisted routing headers, and returned turn state are preserved. Turn-state lifetime belongs to the client.
+- Bind: `127.0.0.1` only. Host is checked; browser Origin requests are rejected. Inference routes trust local processes; control routes require a private token. Do not expose the port.
+- Caller credentials and the actor eligibility marker are stripped. Only the isolated backing login authenticates upstream; the marker grants no entitlements.
+- Request body/decompression cap: 16 MiB. Total request deadline: four minutes. No inference retries.
+- No automatic refresh, model discovery, account rotation, OS service installation, Chat Completions, WebSockets, or remote compaction endpoint.
 
-Supported routes: streaming `POST /v1/responses`, `POST /v1/alpha/search`, and native `POST /v1/images/generations` and `/v1/images/edits`. Original request bytes (including gzip/zstd), allowlisted routing headers, and upstream turn state are preserved. The CLI owns turn-state lifetime. The gateway does not retry inference.
+## Verification record
 
-The server binds only to `127.0.0.1`, validates Host, and rejects browser Origin requests. Caller credentials and the actor-authorization eligibility marker are stripped; upstream authentication comes only from the isolated official CLI login. The marker exposes native tooling in the tested CLI; it grants no account entitlements.
+Local fixtures cover this package. Historical live tests used Codex CLI 0.149.1 and an experimental proxy: [compatibility](docs/compatibility.md), [sanitized evidence](docs/evidence.md). Other CLI versions and desktop parity are unverified. This package has not repeated the live suite.
 
-Inference routes trust local processes; they have no client API key. Do not tunnel or expose the port. Control routes separately require a private random token. Credentials, model bodies, responses, and private reasoning are never logged. Private files use restrictive permissions and reject symlink paths. Requests have a 16 MiB compressed/decompressed body cap and a four-minute total deadline. Shutdown aborts active upstream work; it is not a graceful inference drain.
-
-Chat Completions, WebSockets, remote compaction endpoints, desktop parity, automatic token refresh, model discovery, account switching, and OS service installation are outside scope. Historical **local** CLI compaction is verified.
-
-## Development and release
-
-Read [AGENTS.md](AGENTS.md), use local fixtures, and run `npm run check`. Checks run locally; there are no GitHub Actions workflows. See [sanitized investigation evidence](docs/evidence.md) for methods, corrections, and limitations.
-
-`package.json` remains private to prevent accidental npm publication. No license has been selected; no third-party implementation is vendored.
+Development rules: [AGENTS.md](AGENTS.md). Checks are local; no CI. npm publication is disabled via `private: true`. No license selected. No third-party implementation vendored. Not an official OpenAI product.
