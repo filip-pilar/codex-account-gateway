@@ -1,0 +1,18 @@
+{
+  "name": "codex-gateway",
+  "version": "0.1.0",
+  "description": "An isolated, loopback-only gateway for Codex-backed workflows",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=22.15"
+  },
+  "bin": {
+    "codex-gateway": "src/cli.mjs"
+  },
+  "scripts": {
+    "test": "node --test",
+    "check": "node --check src/cli.mjs && node --check src/state.mjs && node --check src/server.mjs && node --check scripts/smoke-live.mjs && node --test",
+    "smoke:live": "node scripts/smoke-live.mjs"
+  }
+}
