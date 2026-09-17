@@ -13,7 +13,7 @@ open "dist/Codex Gateway.app"
 
 The app is locally ad-hoc signed, not notarized or published. It bundles the gateway JavaScript, not Node or Codex. Rebuild after backend changes. The build records the current Node executable and also supports the standard Homebrew Node locations. A nonstandard Codex install must be on the launching environment's PATH.
 
-The panel fits its content and scrolls only when the account list or expanded controls exceed the available height. A welcome window opens on first launch. After closing it, click the two-profile icon in the menu bar. The app can also be moved to Applications; keep Node and Codex installed. Quitting the app leaves a running gateway alone; use **Connection… → Stop gateway** to stop it. Stopping cancels active requests and asks for confirmation in the UI. The app does not install a login item or restart supervisor.
+The panel fits its content and scrolls only when the account list or expanded controls exceed the available height. A welcome window opens on first launch. After closing it, click the stack icon in the menu bar. The app can also be moved to Applications; keep Node and Codex installed. Quitting the app leaves a running gateway alone; use **Connection… → Stop gateway** to stop it. Stopping cancels active requests and asks for confirmation in the UI. The app does not install a login item or restart supervisor.
 
 ## First account
 
@@ -65,4 +65,4 @@ Tests use disposable profiles and fake Codex executables. They cover isolation, 
 
 ## Icons
 
-The blue app icon and monochrome menu-bar icon share original vector artwork in `macos/Sources/GatewayBar/AccountGlyph.swift`. The build uses `macos/Tools/GenerateIcon.swift` and macOS `iconutil` to generate a complete `.icns` set; no image generation service or external asset download is required. Generated images stay in `macos/.build/` and `dist/`. The menu-bar image is a template, so macOS adapts it to the current appearance.
+The blue app icon and panel header use the original account artwork in `macos/Sources/GatewayBar/AccountGlyph.swift`. The menu bar uses a separate, static stack of layers in `macos/Sources/GatewayBar/StackGlyph.swift`, representing multiple accounts in one place. The build uses `macos/Tools/GenerateIcon.swift` and macOS `iconutil` to generate a complete `.icns` set; no image generation service or external asset download is required. Generated images stay in `macos/.build/` and `dist/`. The menu-bar image is a template, so macOS adapts it to the current appearance.

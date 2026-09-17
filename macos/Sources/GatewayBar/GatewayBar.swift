@@ -8,7 +8,7 @@ import AppKit
         MenuBarExtra {
             GatewayView(model: model)
         } label: {
-            Image(nsImage: AccountGlyph.menuImage)
+            Image(nsImage: StackGlyph.menuImage)
                 .accessibilityLabel("Codex Gateway")
         }
         .menuBarExtraStyle(.window)

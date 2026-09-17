@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-// Original vector artwork shared by the app icon, header, and template status icon.
+// Original vector artwork shared by the app icon and header.
 struct AccountGlyph: Shape {
     static var outline: CGPath {
         let p = CGMutablePath()
@@ -28,21 +28,5 @@ struct AccountGlyph: Shape {
         let scale = min(rect.width / 64, rect.height / 60)
         var transform = CGAffineTransform(translationX: rect.midX - 32 * scale, y: rect.midY - 30 * scale).scaledBy(x: scale, y: scale)
         return Path(Self.outline.copy(using: &transform)!)
-    }
-    static var menuImage: NSImage {
-        let image = NSImage(size: NSSize(width: 20, height: 18), flipped: true) { rect in
-            guard let context = NSGraphicsContext.current?.cgContext else { return false }
-            context.saveGState()
-            context.translateBy(x: 0.4, y: 0)
-            context.scaleBy(x: 0.3, y: 0.3)
-            context.addPath(outline)
-            context.setFillColor(NSColor.black.cgColor)
-            context.fillPath()
-            context.restoreGState()
-            return true
-        }
-        image.isTemplate = true
-        image.accessibilityDescription = "Codex Gateway accounts"
-        return image
     }
 }
