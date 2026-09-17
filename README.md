@@ -1,12 +1,24 @@
 # codex-gateway
 
-Loopback HTTP gateway for Codex, authenticated through an isolated official Codex CLI profile. One backing ChatGPT account per profile.
+Loopback HTTP gateway for Codex, authenticated through an isolated official Codex CLI profile. One backing ChatGPT account per isolated profile, with manual selection behind a stable gateway address.
 
-## Requirements
+Use one account at a time, inspect its remaining usage, and manually switch accounts without changing the local gateway address. Clients currently use the **Codex CLI**; Codex desktop routing and cross-account conversation continuation are unverified. Start a new conversation after switching accounts.
 
-- macOS or Linux; Node >=22.15; official `codex` on PATH.
-- Backing account with access to the selected model and tools.
-- No dependencies or build step. Run commands from the repository directory.
+## Get started
+
+```sh
+git clone https://github.com/filip-pilar/codex-gateway.git
+cd codex-gateway
+```
+
+| Interface | Requirements | Entry point |
+|---|---|---|
+| CLI gateway | macOS or Linux, Node >=22.15, official `codex` on PATH | [Setup below](#setup); no npm install or build needed |
+| Mac menu-bar app | macOS 15+, the CLI requirements, Xcode Command Line Tools with Swift 6+ | `npm run build:macos`, then `open "dist/Codex Gateway.app"` |
+
+Each backing account needs access to the chosen model and tools. The Mac app is built and signed locally; it bundles the gateway code, not Node or Codex. See [Mac setup](docs/macos.md) for the sign-in flow.
+
+**For agents:** use this setup flow and the [JSON CLI contract](docs/cli.md). [AGENTS.md](AGENTS.md) covers repository changes and safety boundaries. Configuration lives outside the checkout; no source edits are needed to install or select accounts.
 
 ## Setup
 
@@ -54,6 +66,16 @@ Use `--json` and branch on `code` and `next_action`. `login` is interactive. Exi
 
    Expected codes: `local_ready`, `running`; checks exit `0`. Credential presence and local liveness do not establish upstream readiness. Real inference requires explicit authorization; see [verification](docs/verification.md).
 
+## Accounts and usage
+
+```sh
+node src/cli.mjs accounts --json
+node src/cli.mjs usage --json
+node src/cli.mjs account-add --label Work --json
+```
+
+Use the returned account ID with `login --account ID` and `account-select --account ID`. Login is interactive; the user completes it. Selection is refused during active requests. Usage reads reported limits through the official CLI without sending inference requests. See [account commands](docs/cli.md#account-selection-and-usage) for the full contract.
+
 ## Operation
 
 ```sh
@@ -67,7 +89,7 @@ node src/cli.mjs stop --json
 | `stale` | Run `start` to recover or `stop` to remove stale runtime state |
 | `runtime_unavailable`, `unsafe_runtime`, `lifecycle_busy` | Follow [recovery instructions](docs/cli.md#conservative-recovery); do not signal unverified PIDs or delete backing credentials |
 
-Background mode has no restart supervisor. Shutdown cancels active requests. Authentication refresh remains manual and owned by the official CLI.
+Background mode has no restart supervisor. Shutdown cancels active requests. Authentication and renewal are owned by the official CLI; the gateway does not refresh credentials itself.
 
 ## Boundary
 
@@ -76,10 +98,17 @@ Background mode has no restart supervisor. Shutdown cancels active requests. Aut
 - Bind: `127.0.0.1` only. Host is checked; browser Origin requests are rejected. Inference routes trust local processes; control routes require a private token. Do not expose the port.
 - Caller credentials and the actor eligibility marker are stripped. Only the isolated backing login authenticates upstream; the marker grants no entitlements.
 - Request body/decompression cap: 16 MiB. Total request deadline: four minutes. No inference retries.
-- No automatic refresh, model discovery, account rotation, OS service installation, Chat Completions, WebSockets, or remote compaction endpoint.
+- No gateway-managed credential refresh, model discovery, automatic account rotation, OS service installation, Chat Completions, WebSockets, or remote compaction endpoint.
 
-## Verification record
+## Development and verification
 
-Local fixtures cover this package. Historical live tests used Codex CLI 0.149.1 and an experimental proxy: [compatibility](docs/compatibility.md), [sanitized evidence](docs/evidence.md). Other CLI versions and desktop parity are unverified. This package has not repeated the live suite.
+```sh
+npm run check         # Local fixtures; no credentials or upstream services
+npm run build:macos   # Build the native app on macOS
+```
+
+The CLI and account logic live in `src/`, SwiftUI in `macos/`, and fixtures in `test/`. Rebuild the app after backend changes because it bundles a copy of `src/`. Quit and reopen it to load a rebuilt executable.
+
+Local fixtures cover this package. Historical live tests used Codex CLI 0.149.1 and an experimental proxy: [compatibility](docs/compatibility.md), [sanitized evidence](docs/evidence.md). The usage adapter follows that CLI version’s generated protocol; authenticated usage retrieval remains unverified. Other CLI versions and desktop parity are unverified. This package has not repeated the live suite.
 
 Development rules: [AGENTS.md](AGENTS.md). Checks are local; no CI. npm publication is disabled via `private: true`. No license selected. No third-party implementation vendored. Not an official OpenAI product.

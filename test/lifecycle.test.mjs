@@ -156,3 +156,18 @@ test('control probes bound response reads and deadlines without following redire
     assert.deepEqual(paths,Array(3).fill('/control/status'));
   }finally{await rm(join(root,'runtime.json'));server.closeAllConnections();await new Promise(r=>server.close(r));}
 }));
+
+test('account CLI selects on a running gateway without changing its address or process', () => fixture(async ({run,auth,root,freePort}) => {
+  await auth(); const added=await run(['account-add','--label','Second','--json']);
+  assert.equal(added.value.code,'account_added'); const id=added.value.account.id;
+  assert.equal((await run(['account-select','--account',id,'--json'])).value.code,'login_required');
+  const home=await ensureState(join(root,'accounts',id));
+  await writePrivate(join(home,'auth.json'),JSON.stringify({auth_mode:'chatgpt',tokens:{access_token:'second',account_id:'second'}}));
+  const started=await run(['start','--background','--port',String(await freePort()),'--json']);
+  assert.equal((await run(['account-select','--account',id,'--json'])).value.code,'account_selected');
+  const status=await run(['status','--json']);assert.equal(status.value.pid,started.value.pid);assert.equal(status.value.url,started.value.url);
+  const accounts=(await run(['accounts','--json'])).value.accounts;
+  assert.equal(accounts.find(a=>a.selected).id,id);
+  assert.equal((await run(['account-select','--account','default','--json'])).value.code,'account_selected');
+  assert.equal((await run(['account-select','--account','../../oops','--json'])).value.code,'invalid_account');
+}));

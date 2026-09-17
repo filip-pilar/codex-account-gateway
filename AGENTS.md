@@ -2,7 +2,7 @@
 
 ## Execution
 
-- Setup: follow [README.md#setup](README.md#setup). Do not edit source to configure a profile.
+- Setup: follow [README.md#setup](README.md#setup); for the Mac app, use [docs/macos.md](docs/macos.md). Do not edit source to configure a profile.
 - CLI: use [docs/cli.md](docs/cli.md); parse JSON codes, not prose. Start diagnosis with `doctor --json` and `status --json`.
 - Treat review, audit, diagnosis, and planning requests as read-only unless implementation is requested.
 - Real inference requires explicit session authorization. Follow [docs/verification.md](docs/verification.md); do not retry or expand live checks automatically. Preserve historical evidence rather than rerunning the investigation.
@@ -18,7 +18,8 @@
 
 ## Changes
 
-- Keep the implementation small and the machine contract stable.
+- Keep the implementation small and the machine contract stable. Runtime code is in `src/`, SwiftUI in `macos/`, and fixtures in `test/`.
 - Add focused local fixtures for behavior changes. Run `npm run check` for runtime changes. Tests must not require real credentials, installed Codex, or upstream services.
+- For Mac app changes, run `npm run build:macos`. The app bundles the backend: rebuild after `src/` changes, and quit/reopen before checking the UI. Keep generated `dist/` and `macos/.build/` out of git.
 - Do not add CI or GitHub Actions unless explicitly requested.
 - Use Conventional Commits and `codex/` branches. Publish, select a license, or change package privacy only when requested.

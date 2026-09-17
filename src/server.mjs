@@ -6,8 +6,9 @@ import { timingSafeEqual } from 'node:crypto';
 const headersToForward = ['content-type','content-encoding','accept','user-agent','openai-beta','originator','session_id','conversation_id','session-id','thread-id','x-codex-routing-hint','x-codex-turn-state','x-codex-turn-metadata','x-openai-internal-codex-responses-lite','x-codex-image-turn-id'];
 const routes = new Map(['/responses','/alpha/search','/images/generations','/images/edits'].map(p => ['/v1'+p, 'https://chatgpt.com/backend-api/codex'+p]));
 const equal = (a,b) => typeof a === 'string' && Buffer.byteLength(a) === Buffer.byteLength(b) && timingSafeEqual(Buffer.from(a),Buffer.from(b));
-export async function startServer({port=8787, credentials, transport=fetch, controlToken, instanceId = 'fixture', onStop=()=>{}, maxBytes=16*1024*1024, timeoutMs=240000}) {
+export async function startServer({port=8787, credentials, transport=fetch, controlToken, instanceId = 'fixture', onStop=()=>{}, onSelect=null, maxBytes=16*1024*1024, timeoutMs=240000}) {
   const active = new Set();
+  let selecting = false;
   const server = http.createServer(async (req,res) => {
     const fail = (status, code) => { if (res.destroyed || res.writableEnded) return; if(!res.headersSent) res.writeHead(status, {'content-type':'application/json','cache-control':'no-store'}); res.end(JSON.stringify({error:{type:'codex_gateway_error',message:code}})); };
     if(req.headers.origin || req.headers.host !== `127.0.0.1:${server.address()?.port}`) return fail(403,'local_client_required');
@@ -19,6 +20,19 @@ export async function startServer({port=8787, credentials, transport=fetch, cont
       if (req.url === '/control/stop') setImmediate(onStop);
       return;
     }
+    const selection = /^\/control\/account\/(default|[a-f0-9]{24})$/.exec(req.url);
+    if (selection && req.method === 'POST') {
+      if (!controlToken || !equal(req.headers.authorization, `Bearer ${controlToken}`)) return fail(403, 'invalid_control_token');
+      const reply = (status, code) => { res.writeHead(status, {'content-type': 'application/json'}); res.end(JSON.stringify({ instanceId, code })); };
+      if (active.size || selecting) return reply(409, 'gateway_busy');
+      if (!onSelect) return reply(501, 'account_switch_unavailable');
+      selecting = true;
+      try { await onSelect(selection[1]); reply(200, 'account_selected'); }
+      catch (e) { reply(400, e.code === 'login_required' ? 'login_required' : 'account_switch_failed'); }
+      finally { selecting = false; }
+      return;
+    }
+    if (selecting) return fail(503, 'account_switch_in_progress');
     const url = routes.get(req.url);
     if(req.method !== 'POST' || !url) return fail(404,'unsupported_route');
     const controller = new AbortController();

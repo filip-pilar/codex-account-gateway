@@ -74,3 +74,24 @@ test('zstd bytes and image/search bodies remain exact; login errors are redacted
     }
   }finally{await s.close();}
 });
+
+test('account changes require control auth, refuse in-flight work, and gate new requests during selection', async () => {
+  let began, release, selected = 'before', switchStarted, finishSwitch;
+  const ready = new Promise(r => began = r), pending = new Promise(r => release = r);
+  const selecting = new Promise(r => switchStarted = r), selection = new Promise(r => finishSwitch = r);
+  const server = await startServer({port:0,controlToken:'fixture',credentials:async()=>({token:selected,account:selected}),
+    onSelect:async()=>{switchStarted();await selection;selected='after';},
+    transport:async(_, opts)=>{assert.equal(opts.headers.get('authorization'),'Bearer before');began();await pending;return new Response('done');}});
+  const url=`http://127.0.0.1:${server.port}`;
+  const change = headers => fetch(url+'/control/account/default',{method:'POST',headers});
+  const request = () => fetch(url+'/v1/responses',{method:'POST',body:JSON.stringify(body)});
+  try {
+    assert.equal((await change({})).status,403);
+    const work=request();await ready;
+    const busy=await change({authorization:'Bearer fixture'});assert.equal(busy.status,409);assert.equal((await busy.json()).code,'gateway_busy');
+    release();await (await work).text();
+    const switching=change({authorization:'Bearer fixture'});await selecting;
+    assert.equal((await request()).status,503);
+    finishSwitch();assert.equal((await switching).status,200);assert.equal(selected,'after');
+  } finally {release();finishSwitch();await server.close();}
+});

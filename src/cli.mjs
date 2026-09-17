@@ -8,6 +8,8 @@ import net from 'node:net';
 import http from 'node:http';
 import { stateRoot, ensureState, writePrivate, readPrivate, readAuth, noSymlinkParents } from './state.mjs';
 import { startServer } from './server.mjs';
+import { selectedAccount, getAccount, listAccounts, addAccount, selectAccount } from './accounts.mjs';
+import { readUsage } from './usage.mjs';
 
 const [command = 'help', ...args] = process.argv.slice(2);
 const json = args.includes('--json');
@@ -21,7 +23,8 @@ function output(value) {
 }
 function options() {
   const allowed = {
-    help: [], '--help': [], '-h': [], login: [],
+    help: [], '--help': [], '-h': [], login: ['--account'],
+    accounts: [], 'account-add': ['--label'], 'account-select': ['--account'], usage: ['--account'],
     start: ['--port', '--background'], stop: [], status: [], doctor: ['--port'],
     setup: ['--port', '--model', '--client-dir'],
   }[command];
@@ -70,6 +73,30 @@ function probe(r, action = 'status') {
     req.end();
   });
 }
+
+async function selectRunning(r, id) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true; clearTimeout(timer); req.destroy();
+      if (value?.instanceId === r.instanceId && value.code === 'account_selected') resolve();
+      else reject(error(value?.code === 'gateway_busy' ? 'gateway_busy' : value?.code === 'login_required' ? 'login_required' : 'account_switch_failed',
+        value?.code === 'gateway_busy' ? 'Wait for active requests to finish, then switch accounts.' : 'Account switch failed.', 'status'));
+    };
+    const req = http.request({ hostname: '127.0.0.1', port: r.port, path: `/control/account/${id}`, method: 'POST', agent: false,
+      headers: { authorization: `Bearer ${r.controlToken}` } }, res => {
+      let body = '';
+      res.on('data', chunk => { body += chunk; if (body.length > 2048) finish(null); });
+      res.on('error', () => finish(null));
+      res.on('end', () => { try { finish(JSON.parse(body)); } catch { finish(null); } });
+      res.on('close', () => finish(null));
+    });
+    const timer = setTimeout(() => finish(null), 5000);
+    req.on('error', () => finish(null)); req.end();
+  });
+}
+
 async function lockState() {
   try { await noSymlinkParents(root); await lstat(join(root, 'lifecycle.lock')); return 'present'; }
   catch (e) { return e.code === 'ENOENT' ? 'absent' : 'unsafe'; }
@@ -165,6 +192,7 @@ async function background(opts) {
   if (!result.ok) { process.exitCode = 1; output(result); return; }
   output({ ...result, background: true });
 }
+async function activeAuth(options) { return readAuth((await selectedAccount(root)).path, options); }
 async function start(opts, port) {
   if (opts['--background']) return background(opts);
   await ensureState(root);
@@ -178,11 +206,11 @@ async function start(opts, port) {
       if (alive(old.pid)) throw error('runtime_unavailable', 'Recorded process still exists but cannot be verified.', 'status');
       await unlink(runtime);
     }
-    try { await readAuth(root); } catch { throw error('login_required', 'Isolated credentials are missing or unsafe.', 'login'); }
+    try { await activeAuth(); } catch { throw error('login_required', 'Isolated credentials are missing or unsafe.', 'login'); }
     const r = { pid: process.pid, port, instanceId: randomBytes(16).toString('hex'), controlToken: randomBytes(32).toString('hex') };
     let server, stopping;
     const stop = () => stopping ??= (async () => { await server.close(); await clearOwned(r.instanceId); })().catch(() => { process.exitCode = 1; });
-    server = await startServer({ port, credentials: () => readAuth(root), controlToken: r.controlToken, instanceId: r.instanceId, onStop: stop });
+    server = await startServer({ port, credentials: () => activeAuth(), onSelect: id => locked(() => selectAccount(root, id)), controlToken: r.controlToken, instanceId: r.instanceId, onStop: stop });
     try { await writePrivate(runtime, JSON.stringify(r)); } catch (e) { await server.close(); throw e; }
     process.once('SIGINT', stop); process.once('SIGTERM', stop);
     return { current: r };
@@ -193,7 +221,11 @@ async function start(opts, port) {
 async function main() {
   const opts = options(), port = Number(opts['--port'] ?? 8787);
   if (['help', '--help', '-h'].includes(command)) return output({ ok: true, code: 'help', message: `codex-gateway 0.1.0
-login                                      Interactive official CLI login
+login [--account ID]                       Interactive official CLI login
+accounts                                   List isolated account profiles
+account-add --label NAME                    Add an unsigned-in account
+account-select --account ID                 Select account when gateway is idle
+usage [--account ID]                        Read reported limits via official CLI
 start [--port NUMBER] [--background]        Start or report existing instance
 status                                     Verify selected instance
 stop                                       Stop selected instance (idempotent)
@@ -202,8 +234,31 @@ setup --model MODEL [--port NUMBER] [--client-dir NEW_ABSOLUTE_DIRECTORY]
 All commands except login accept --json. See docs/cli.md.
 CODEX_GATEWAY_HOME selects private state. No global configuration edits.` });
   if (command === 'setup') return setup(opts, port);
+  if (command === 'accounts') return output({ ok: true, code: 'accounts', accounts: await listAccounts(root) });
+  if (command === 'account-add') return output({ ok: true, code: 'account_added', account: await addAccount(root, opts['--label']) });
+  if (command === 'usage') {
+    const account = opts['--account'] ? await getAccount(root, opts['--account']) : await selectedAccount(root);
+    return output({ ok: true, code: 'usage', account: account.id, ...await readUsage(account.path) });
+  }
+  if (command === 'account-select') {
+    if (!opts['--account']) throw error('invalid_arguments', 'account-select requires --account.');
+    await getAccount(root, opts['--account']);
+    await ensureState(root);
+    // Probe/select under the lifecycle lock when stopped. The running server owns
+    // selection and refuses changes while any request is in flight.
+    const running = await locked(async () => {
+      const r = await saved();
+      if (r && await probe(r)) return r;
+      if (r && alive(r.pid)) throw error('runtime_unavailable', 'Runtime cannot be verified.', 'status');
+      await selectAccount(root, opts['--account']);
+      return null;
+    });
+    if (running) await selectRunning(running, opts['--account']);
+    return output({ ok: true, code: 'account_selected', account: opts['--account'] });
+  }
   if (command === 'login') {
-    const home = await ensureState(root);
+    const account = opts['--account'] ? await getAccount(root, opts['--account']) : await selectedAccount(root);
+    const home = await ensureState(account.path);
     await writePrivate(join(home, 'config.toml'), 'cli_auth_credentials_store = "file"\n').catch(e => { if (e.code !== 'EEXIST') throw e; });
     const env = { ...process.env, CODEX_HOME: home };
     for (const key of ['OPENAI_API_KEY', 'CODEX_API_KEY', 'OPENAI_BASE_URL']) delete env[key];
@@ -214,7 +269,7 @@ CODEX_GATEWAY_HOME selects private state. No global configuration edits.` });
   }
   if (command === 'doctor') {
     const version = await cliVersion();
-    let credentials = 'present'; try { await readAuth(root, { create: false }); } catch { credentials = 'missing_or_unsafe'; }
+    let credentials = 'present'; try { await activeAuth({ create: false }); } catch { credentials = 'missing_or_unsafe'; }
     let status; try { status = await inspect(); } catch (e) { status = { state: 'unsafe', code: e.code }; }
     const lifecycle_lock = await lockState();
     const selectedPort = opts['--port'] ? port : status.port ?? port;

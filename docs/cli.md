@@ -4,12 +4,16 @@ Invoke `node src/cli.mjs COMMAND`. No global installation is required. `CODEX_GA
 
 | Command | Options | Behavior |
 |---|---|---|
-| `login` | none | Interactive official CLI login; no JSON or inference |
+| `login` | `--account ID` | Interactive official CLI login; no JSON or inference |
 | `start` | `--port NUMBER`, `--background`, `--json` | Start, wait for readiness, or report matching running instance |
 | `status` | `--json` | Authenticate and verify selected runtime instance; no upstream call |
 | `stop` | `--json` | Stop verified instance and wait for cleanup, or succeed if already stopped |
 | `doctor` | `--port NUMBER`, `--json` | Aggregate local checks; no writes, inference, or expiry validation |
 | `setup` | required `--model MODEL`; `--port NUMBER`, `--client-dir NEW_ABSOLUTE_DIRECTORY`, `--json` | Return TOML or explicitly create a new private client directory |
+| `accounts` | none | List labels, selected profile, and local credential presence; no upstream call |
+| `account-add` | required `--label NAME` | Create a private unsigned-in account with a random ID |
+| `account-select` | required `--account ID` | Select an authenticated profile; refuse switching during active requests |
+| `usage` | `--account ID` | Read usage through official CLI app-server; no inference |
 | `help` | `--json` | Usage |
 
 Ports default to 8787 and must be 1024–65535. Unknown/duplicate options are errors. `start` without an explicit port accepts an existing instance's port; an explicit conflicting port returns `already_running_other_port`. `setup` defaults to 8787 independently: use the running instance's port when it differs. `doctor` checks the recorded port unless overridden.
@@ -51,3 +55,20 @@ Normal crash recovery is automatic, serialized, and never signals an unverified 
 A lifecycle lock exists only during brief state mutations. Concurrent commands wait up to three seconds. If a process dies during that critical section, the lock deliberately remains. Retry status/doctor first. If the lock persists, establish that all gateway processes for this profile have stopped before removing **only the empty `lifecycle.lock` directory**. Likewise, remove corrupt/legacy `runtime.json` only after establishing no instance remains. These exceptional cases need operator/agent investigation; never remove `codex/` or read credentials into diagnostics. Do not use PID existence alone as proof that a process is a gateway.
 
 Background mode is a detached Node process with no body/error log file and no restart supervisor. `stop` waits up to five seconds for owned state cleanup. Shutdown cancels in-flight work. Use foreground mode under an existing process supervisor if one is already available; installing a service is outside this CLI.
+
+## Account selection and usage
+
+`default` refers to the existing root profile. Added accounts use random IDs returned by `account-add` and `accounts`. `login` and `usage` default to the selected account. `start`, `doctor`, and gateway requests use the selected account. An expired login must be renewed through official login.
+
+```sh
+node src/cli.mjs account-add --label Work --json
+node src/cli.mjs login --account RETURNED_ID
+node src/cli.mjs account-select --account RETURNED_ID --json
+node src/cli.mjs usage --account RETURNED_ID --json
+```
+
+New success codes: `accounts`, `account_added`, `account_selected`, `usage`. New failure codes: `invalid_account`, `gateway_busy`, `account_switch_failed`, `usage_unavailable`, `usage_timeout`. `login_required` and `cli_unavailable` retain their meaning. Switching a running gateway uses its authenticated control endpoint and preserves the address. It returns `gateway_busy` while a request or selection is in progress; there is no queued switch or automatic retry. New inference requests during the brief selection mutation receive HTTP 503 / `account_switch_in_progress`.
+
+`usage` returns `account`, `checked_at` (ISO timestamp), and `buckets`. Each bucket has `id`, `primary`, and `secondary`; each available window has `remaining_percent`, nullable `window_minutes`, and nullable `resets_at` (Unix seconds). Missing windows are null. Upstream messages, credentials, credits, and unrelated protocol notifications are never printed. Each read has a 15-second deadline and 1 MiB output cap. The official CLI owns authentication and renewal.
+
+Selection is stored privately in `selected-account.json`. Added profile metadata and official CLI state live under `accounts/<id>/`. Selection writes are atomic and serialized through the gateway lifecycle lock. No existing authentication is moved or copied. See [macOS UI](macos.md).

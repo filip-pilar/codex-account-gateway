@@ -2,9 +2,13 @@
 
 ## Local default
 
-Run `npm run check`. Tests use disposable private directories, a fixture `codex` executable, fake credentials, and loopback transports. They do not call the installed CLI, authenticate, or reach model services. Fixtures cover lifecycle, configuration isolation, machine output, forwarding, cancellation/deadlines, and private state. Checks are local only.
+Run `npm run check`. Tests use disposable private directories, a fixture `codex` executable, fake credentials, and loopback transports. They do not call the installed CLI, authenticate, or reach model services. Fixtures cover lifecycle, configuration isolation, machine output, forwarding, cancellation/deadlines, private state, account selection, and usage RPC normalization/redaction/timeouts. Checks are local only.
 
 For an installed profile, `doctor --json` and `status --json` are local readiness checks. Credential presence is not token validity. An authenticated control response is not proof of upstream access. `doctor` does not create missing state directories.
+
+## macOS app
+
+Run `npm run build:macos`, then quit and reopen the built app. Verify the actual menu-bar popover, including its unsigned-in account card; a successful build or standalone preview does not establish popover layout. Use `--preview --demo` for sample usage cards without reading real accounts (see [Mac development](macos.md#development)). Authentication and usage retrieval require a separate user-completed login; fixture success is not evidence of upstream access.
 
 ## Optional authorized live smoke
 
