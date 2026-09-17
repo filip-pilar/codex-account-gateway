@@ -1,7 +1,7 @@
 {
   "name": "codex-gateway",
   "version": "0.1.0",
-  "description": "An isolated, loopback-only gateway for Codex-backed workflows",
+  "description": "Stay signed into one account. Use usage from multiple ChatGPT accounts.",
   "type": "module",
   "private": true,
   "engines": {

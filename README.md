@@ -1,6 +1,8 @@
 # codex-gateway
 
-Loopback HTTP gateway for Codex, authenticated through an isolated official Codex CLI profile. One backing ChatGPT account per isolated profile, with manual selection behind a stable gateway address.
+**Stay signed into one account. Use usage from multiple ChatGPT accounts.**
+
+The intended experience is one desktop login with a choice of accounts supplying usage. The current implementation is a loopback gateway with isolated account profiles and a native Mac menu-bar interface.
 
 Use one account at a time, inspect its remaining usage, and manually switch accounts without changing the local gateway address. Clients currently use the **Codex CLI**; Codex desktop routing and cross-account conversation continuation are unverified. Start a new conversation after switching accounts.
 

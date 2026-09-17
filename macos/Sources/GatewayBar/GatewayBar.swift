@@ -45,8 +45,8 @@ struct GatewayView: View {
                     }
                     if model.accounts.count == 1 && !model.accounts[0].authenticated {
                         VStack(alignment: .leading, spacing: 8) {
-                            Text("Your accounts. One gateway.").font(.title3.weight(.semibold))
-                            Text("Sign in to see your remaining usage. Choose which account powers your next requests.")
+                            Text("Stay signed into one account.").font(.title3.weight(.semibold))
+                            Text("Use usage from multiple ChatGPT accounts. Sign in below to see remaining usage and choose an account.")
                                 .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                         }
                     }

@@ -1,5 +1,7 @@
 # macOS menu-bar app
 
+**Stay signed into one account. Use usage from multiple ChatGPT accounts.**
+
 A native SwiftUI menu-bar app for account selection, usage visibility, and gateway controls. Requires macOS 15 or newer, Node >=22.15, the official `codex` CLI on PATH, and Xcode Command Line Tools to build. It uses the existing local gateway; it does not change your primary Codex login or configuration.
 
 ## Build and open
