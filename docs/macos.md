@@ -13,14 +13,14 @@ open "dist/Codex Gateway.app"
 
 The app is locally ad-hoc signed, not notarized or published. It bundles the gateway JavaScript, not Node or Codex. Rebuild after backend changes. The build records the current Node executable and also supports the standard Homebrew Node locations. A nonstandard Codex install must be on the launching environment's PATH.
 
-A welcome window opens on first launch. After closing it, click the branch icon in the menu bar. The app can also be moved to Applications; keep Node and Codex installed. Quitting the app leaves a running gateway alone; use **Stop gateway** to stop it. Stopping cancels active requests and asks for confirmation in the UI. The app does not install a login item or restart supervisor.
+The panel fits its content and scrolls only when the account list or expanded controls exceed the available height. A welcome window opens on first launch. After closing it, click the branch icon in the menu bar. The app can also be moved to Applications; keep Node and Codex installed. Quitting the app leaves a running gateway alone; use **Stop gateway** to stop it. Stopping cancels active requests and asks for confirmation in the UI. The app does not install a login item or restart supervisor.
 
 ## First account
 
 1. Click **Sign in** on Default. Terminal opens the official Codex login. Complete it yourself; the app does not read login output.
 2. Click **Check sign-in**. Available usage windows and reset times appear after the official CLI reports them.
 3. Click **Start gateway**.
-4. Choose **Set up Codex CLI…**, enter a supported model ID, and choose a new client folder. The app generates a separate client configuration and opens that client in Terminal.
+4. Expand **Connection**, choose **Set up Codex CLI…**, enter a supported model ID, and choose a new client folder. The app generates a separate client configuration and opens that client in Terminal.
 
 The default backing state is `~/.local/share/codex-gateway`; `CODEX_GATEWAY_HOME` can select an alternative root when launching the app. Client configuration must stay separate from backing state. Existing client folders are never overwritten.
 

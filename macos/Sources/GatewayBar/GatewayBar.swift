@@ -23,12 +23,18 @@ import AppKit
 struct GatewayView: View {
     @ObservedObject var model: GatewayModel
     @State private var confirmStop = false
+    @State private var contentHeight: CGFloat = 260
+    @State private var connectionExpanded = false
+    private var bodyHeight: CGFloat {
+        let available = (NSScreen.main?.visibleFrame.height ?? 800) - 160
+        return min(contentHeight, max(180, min(520, available)))
+    }
     var body: some View {
         VStack(spacing: 0) {
             header
             Divider()
             ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
+                VStack(alignment: .leading, spacing: 16) {
                     if let message = model.message {
                         HStack(alignment: .top, spacing: 8) {
                             Image(systemName: model.isError ? "exclamationmark.circle" : "info.circle")
@@ -45,14 +51,14 @@ struct GatewayView: View {
                     }
                     if model.accounts.count == 1 && !model.accounts[0].authenticated {
                         VStack(alignment: .leading, spacing: 8) {
-                            Text("Stay signed into one account.").font(.title3.weight(.semibold))
-                            Text("Use usage from multiple ChatGPT accounts. Sign in below to see remaining usage and choose an account.")
+                            Text("Stay signed into one account.").font(.system(size: 15, weight: .semibold))
+                            Text("Use usage from multiple ChatGPT accounts.")
                                 .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                         }
                     }
                     VStack(alignment: .leading, spacing: 10) {
                         HStack {
-                            Text("ACCOUNTS").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                            Text("Accounts").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                             Spacer()
                             Button { model.adding.toggle(); model.connecting = false } label: { Label("Add", systemImage: "plus") }
                                 .buttonStyle(.plain).font(.caption.weight(.medium)).disabled(model.busy)
@@ -65,15 +71,25 @@ struct GatewayView: View {
                             .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     }
                     connection
-                }.padding(20)
-            }.frame(height: 520)
+                }
+                .padding(16)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+                .background(GeometryReader { geometry in
+                    Color.clear.preference(key: ContentHeightKey.self, value: geometry.size.height)
+                })
+            }
+            .frame(height: bodyHeight)
+            .onPreferenceChange(ContentHeightKey.self) { height in
+                if height > 0 { contentHeight = ceil(height) }
+            }
             Divider()
             footer
         }
-        // MenuBarExtra sizes its panel from the root ideal size. A width-only
-        // root can let the scroll area collapse during its first sizing pass.
-        .frame(width: 368, height: 650)
-        .fixedSize()
+        // Give the scroll view a measured, bounded height so the panel has a
+        // stable intrinsic size without reserving blank space for absent content.
+        .frame(width: 360)
+        .fixedSize(horizontal: false, vertical: true)
         .background(.regularMaterial)
         .task {
             if !ProcessInfo.processInfo.arguments.contains("--demo") { UserDefaults.standard.set(true, forKey: "didShowWelcome") }
@@ -85,8 +101,8 @@ struct GatewayView: View {
     }
     private var header: some View {
         HStack(spacing: 12) {
-            Image(systemName: "arrow.triangle.branch").font(.system(size: 20, weight: .medium))
-                .frame(width: 38, height: 38).background(.quaternary, in: RoundedRectangle(cornerRadius: 11))
+            Image(systemName: "arrow.triangle.branch").font(.system(size: 17, weight: .medium))
+                .frame(width: 32, height: 32).background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 9))
             VStack(alignment: .leading, spacing: 3) {
                 Text("Codex Gateway").font(.headline)
                 HStack(spacing: 5) {
@@ -101,7 +117,7 @@ struct GatewayView: View {
                 Button { Task { await model.refresh(includeUsage: true) } } label: { Image(systemName: "arrow.clockwise") }
                     .buttonStyle(.plain).foregroundStyle(.secondary).help("Refresh accounts and usage").accessibilityLabel("Refresh accounts and usage")
             }
-        }.padding(20)
+        }.padding(16)
     }
     private var addForm: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -120,8 +136,8 @@ struct GatewayView: View {
     private func accountCard(_ account: Account) -> some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
-                Image(systemName: account.selected ? "checkmark.circle.fill" : "person.crop.circle")
-                    .foregroundStyle(account.selected ? Color.accentColor : Color.secondary).font(.title3)
+                Image(systemName: account.selected && account.authenticated ? "checkmark.circle.fill" : "person.crop.circle")
+                    .foregroundStyle(account.selected && account.authenticated ? Color.accentColor : Color.secondary).font(.title3)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(account.label).font(.system(.body, weight: .semibold)).lineLimit(1)
                     Text(!account.authenticated ? "Sign-in needed" : account.selected ? "Selected account" : "Available")
@@ -129,7 +145,7 @@ struct GatewayView: View {
                 }
                 Spacer(minLength: 4)
                 if !account.authenticated {
-                    Button("Sign in") { model.login(account) }.controlSize(.small).disabled(model.busy)
+                    Button("Sign in") { model.login(account) }.buttonStyle(.borderedProminent).controlSize(.small).disabled(model.busy)
                 } else if !account.selected {
                     Button("Use") { Task { await model.action(["account-select", "--account", account.id], success: "Using \(account.label). Start a new conversation for this account.") } }
                         .controlSize(.small).disabled(model.busy).accessibilityLabel("Use \(account.label)")
@@ -158,9 +174,9 @@ struct GatewayView: View {
                 Text(error).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
         }
-        .padding(14)
-        .background(account.selected ? Color.accentColor.opacity(0.045) : Color.primary.opacity(0.025), in: RoundedRectangle(cornerRadius: 14))
-        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(account.selected ? Color.accentColor.opacity(0.22) : Color.primary.opacity(0.08), lineWidth: 1))
+        .padding(12)
+        .background(account.selected && account.authenticated ? Color.accentColor.opacity(0.045) : Color.primary.opacity(0.025), in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(account.selected && account.authenticated ? Color.accentColor.opacity(0.22) : Color.primary.opacity(0.08), lineWidth: 1))
     }
     private func meter(_ window: UsageWindow) -> some View {
         VStack(alignment: .leading, spacing: 5) {
@@ -176,40 +192,55 @@ struct GatewayView: View {
         }
     }
     private var connection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text("CONNECTION").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                Spacer()
-                Button { model.copyEndpoint() } label: { Image(systemName: "doc.on.doc") }
-                    .buttonStyle(.plain).foregroundStyle(.secondary).help("Copy gateway address").accessibilityLabel("Copy gateway address")
-            }
-            Text(model.endpoint).font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary).textSelection(.enabled)
-            Button("Set up Codex CLI…", systemImage: "terminal") { model.connecting.toggle(); model.adding = false }
-                .disabled(model.busy)
-            if model.connecting {
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("Enter a model your account supports. A new isolated client profile will open in Terminal.")
-                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                    TextField("Model ID", text: $model.modelID).textFieldStyle(.roundedBorder)
-                    Button("Create profile & open") { Task { await model.createClient() } }
-                        .disabled(model.busy || model.modelID.trimmingCharacters(in: .whitespaces).isEmpty || !model.running)
-                    if !model.running { Text("Start the gateway first.").font(.caption).foregroundStyle(.secondary) }
+        DisclosureGroup(isExpanded: $connectionExpanded) {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Text(model.endpoint).font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(.secondary).textSelection(.enabled)
+                    Spacer(minLength: 4)
+                    Button { model.copyEndpoint() } label: { Image(systemName: "doc.on.doc") }
+                        .buttonStyle(.plain).foregroundStyle(.secondary)
+                        .help("Copy gateway address").accessibilityLabel("Copy gateway address")
                 }
-            }
-            Text("Codex desktop connection is not yet verified.")
-                .font(.caption2).foregroundStyle(.tertiary)
+                Button("Set up Codex CLI…", systemImage: "terminal") { model.connecting.toggle(); model.adding = false }
+                    .disabled(model.busy)
+                if model.connecting {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Enter a model your account supports. A new client profile will open in Terminal.")
+                            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                        TextField("Model ID", text: $model.modelID).textFieldStyle(.roundedBorder)
+                        Button("Create profile & open") { Task { await model.createClient() } }
+                            .disabled(model.busy || model.modelID.trimmingCharacters(in: .whitespaces).isEmpty || !model.running)
+                        if !model.running { Text("Start the gateway first.").font(.caption).foregroundStyle(.secondary) }
+                    }
+                }
+                Text("Codex desktop connection is not yet verified.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }.padding(.top, 10)
+        } label: {
+            Label("Connection", systemImage: "network")
+                .font(.callout).foregroundStyle(.secondary)
         }
     }
     private var footer: some View {
         HStack {
             if model.running {
                 Button("Stop gateway") { confirmStop = true }.disabled(model.busy)
-            } else {
+            } else if model.selectedReady {
                 Button("Start gateway") { Task { await model.action(["start", "--background"], success: "Gateway running.") } }
-                    .disabled(model.busy || !model.selectedReady)
+                    .disabled(model.busy)
+            } else {
+                Text("Sign in to get started").foregroundStyle(.secondary)
             }
             Spacer()
             Button("Quit") { NSApp.terminate(nil) }.help("Quit menu-bar app; the gateway keeps running")
-        }.buttonStyle(.plain).font(.caption).foregroundStyle(.secondary).padding(.horizontal, 20).padding(.vertical, 13)
+        }.buttonStyle(.plain).font(.caption).foregroundStyle(.secondary).padding(.horizontal, 16).padding(.vertical, 12)
+    }
+}
+
+private struct ContentHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
     }
 }
