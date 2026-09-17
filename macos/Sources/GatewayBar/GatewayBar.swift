@@ -8,7 +8,7 @@ import AppKit
         MenuBarExtra {
             GatewayView(model: model)
         } label: {
-            Image(systemName: "arrow.triangle.branch")
+            Image(nsImage: AccountGlyph.menuImage)
                 .accessibilityLabel("Codex Gateway")
         }
         .menuBarExtraStyle(.window)
@@ -23,10 +23,12 @@ import AppKit
 struct GatewayView: View {
     @ObservedObject var model: GatewayModel
     @State private var confirmStop = false
-    @State private var contentHeight: CGFloat = 260
+    @State private var contentHeight: CGFloat = 180
     @State private var connectionExpanded = false
+    @State private var usageExpanded = false
+    private var selected: Account? { model.accounts.first(where: \.selected) }
     private var bodyHeight: CGFloat {
-        let available = (NSScreen.main?.visibleFrame.height ?? 800) - 160
+        let available = (NSScreen.main?.visibleFrame.height ?? 800) - 130
         return min(contentHeight, max(180, min(520, available)))
     }
     var body: some View {
@@ -34,7 +36,7 @@ struct GatewayView: View {
             header
             Divider()
             ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: 12) {
                     if let message = model.message {
                         HStack(alignment: .top, spacing: 8) {
                             Image(systemName: model.isError ? "exclamationmark.circle" : "info.circle")
@@ -44,35 +46,36 @@ struct GatewayView: View {
                                 .buttonStyle(.plain).accessibilityLabel("Dismiss message")
                         }
                         .font(.caption).foregroundStyle(model.isError ? Color.orange : Color.secondary)
+                        .padding(.horizontal, 14)
                     }
                     if model.loginPending {
                         Button("Check sign-in", systemImage: "arrow.clockwise") { Task { await model.checkLogin() } }
-                            .disabled(model.busy)
+                            .disabled(model.busy).padding(.horizontal, 14)
                     }
                     if model.accounts.count == 1 && !model.accounts[0].authenticated {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("Stay signed into one account.").font(.system(size: 15, weight: .semibold))
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text("Stay signed into one account.").font(.system(size: 14, weight: .semibold))
                             Text("Use usage from multiple ChatGPT accounts.")
                                 .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                        }
+                        }.padding(.horizontal, 14)
                     }
-                    VStack(alignment: .leading, spacing: 10) {
-                        HStack {
-                            Text("Accounts").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                            Spacer()
-                            Button { model.adding.toggle(); model.connecting = false } label: { Label("Add", systemImage: "plus") }
-                                .buttonStyle(.plain).font(.caption.weight(.medium)).disabled(model.busy)
+                    if model.adding { addForm.padding(.horizontal, 14) }
+                    VStack(spacing: 2) {
+                        if model.accounts.contains(where: \.authenticated) {
+                            HStack {
+                                Text("Account")
+                                Spacer()
+                                Text("Weekly left")
+                            }.font(.caption).foregroundStyle(.secondary).padding(.leading, 37).padding(.trailing, 16).padding(.bottom, 3)
                         }
-                        if model.adding { addForm }
-                        ForEach(model.accounts) { account in accountCard(account) }
+                        ForEach(model.accounts) { account in accountRow(account) }
                     }
                     if model.accounts.contains(where: \.authenticated) {
-                        Text("Switching applies to the next request. For now, start a new conversation after switching accounts.")
-                            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                        usageDetails.padding(.horizontal, 14)
                     }
-                    connection
+                    if connectionExpanded { connection.padding(.horizontal, 14) }
                 }
-                .padding(16)
+                .padding(.vertical, 12)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .fixedSize(horizontal: false, vertical: true)
                 .background(GeometryReader { geometry in
@@ -86,9 +89,7 @@ struct GatewayView: View {
             Divider()
             footer
         }
-        // Give the scroll view a measured, bounded height so the panel has a
-        // stable intrinsic size without reserving blank space for absent content.
-        .frame(width: 360)
+        .frame(width: 340)
         .fixedSize(horizontal: false, vertical: true)
         .background(.regularMaterial)
         .task {
@@ -100,24 +101,107 @@ struct GatewayView: View {
         } message: { Text("Active requests will be cancelled. Your accounts stay signed in.") }
     }
     private var header: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "arrow.triangle.branch").font(.system(size: 17, weight: .medium))
-                .frame(width: 32, height: 32).background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 9))
-            VStack(alignment: .leading, spacing: 3) {
-                Text("Codex Gateway").font(.headline)
+        HStack(spacing: 8) {
+            AccountGlyph().fill(.secondary).frame(width: 20, height: 19).accessibilityHidden(true)
+            Text("Gateway").font(.system(size: 13, weight: .semibold))
+            Spacer()
+            if model.busy { ProgressView().controlSize(.mini).accessibilityLabel("Updating gateway") }
+            if !model.running && model.selectedReady {
+                Button("Start") { Task { await model.action(["start", "--background"], success: "Gateway running.") } }
+                    .controlSize(.small).disabled(model.busy).accessibilityLabel("Start gateway")
+            } else {
                 HStack(spacing: 5) {
-                    Circle().fill(model.running ? Color.green : Color.secondary.opacity(0.5)).frame(width: 6, height: 6)
-                    Text(model.running ? "Running · \(model.activeName)" : model.state == "stopped" ? "Gateway stopped" : model.state.replacingOccurrences(of: "_", with: " ").capitalized)
+                    Circle().fill(model.running ? Color.green : Color.secondary.opacity(0.5)).frame(width: 5, height: 5)
+                    Text(model.running ? "Running" : model.state.replacingOccurrences(of: "_", with: " ").capitalized)
                         .font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
             }
-            Spacer()
-            if model.busy { ProgressView().controlSize(.small).accessibilityLabel("Updating gateway") }
-            else {
-                Button { Task { await model.refresh(includeUsage: true) } } label: { Image(systemName: "arrow.clockwise") }
-                    .buttonStyle(.plain).foregroundStyle(.secondary).help("Refresh accounts and usage").accessibilityLabel("Refresh accounts and usage")
+        }.padding(.horizontal, 14).padding(.vertical, 12)
+    }
+    @ViewBuilder private func accountRow(_ account: Account) -> some View {
+        if account.authenticated {
+            Button {
+                guard !account.selected else { return }
+                Task { await model.action(["account-select", "--account", account.id], success: "Using \(account.label). Start a new conversation for this account.") }
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "checkmark").font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Color.accentColor).opacity(account.selected ? 1 : 0).frame(width: 14)
+                    Text(account.label).lineLimit(1).truncationMode(.middle)
+                    Spacer(minLength: 8)
+                    if model.usageErrors[account.id] != nil {
+                        Image(systemName: "exclamationmark.circle").font(.caption).foregroundStyle(.orange)
+                            .help("Usage may be out of date. Open Usage details.")
+                    }
+                    if let weekly = model.usages[account.id]?.weeklyWindow {
+                        Text("\(Int(weekly.remaining_percent.rounded()))%")
+                            .monospacedDigit().foregroundStyle(weekly.remaining_percent <= 10 ? Color.orange : Color.primary)
+                    } else {
+                        Text("—").foregroundStyle(.secondary).help("Weekly usage has not been reported.")
+                    }
+                }
+                .font(.system(size: 13))
+                .padding(.horizontal, 10).padding(.vertical, 9)
+                .contentShape(Rectangle())
+                .background(account.selected ? Color.accentColor.opacity(0.1) : .clear, in: RoundedRectangle(cornerRadius: 5))
             }
-        }.padding(16)
+            .buttonStyle(.plain).disabled(model.busy).padding(.horizontal, 6)
+            .accessibilityLabel("\(account.label), \(account.selected ? "selected, " : "")weekly remaining \(weeklyDescription(account))")
+            .accessibilityHint("Select this account for future requests")
+        } else {
+            HStack {
+                Image(systemName: "person.crop.circle").foregroundStyle(.secondary).frame(width: 14)
+                Text(account.label).lineLimit(1)
+                Spacer()
+                Button("Sign in") { model.login(account) }.buttonStyle(.borderedProminent).controlSize(.small).disabled(model.busy)
+            }.font(.system(size: 13)).padding(.horizontal, 16).padding(.vertical, 6)
+        }
+    }
+    private func weeklyDescription(_ account: Account) -> String {
+        guard let window = model.usages[account.id]?.weeklyWindow else { return "unavailable" }
+        let stale = model.usageErrors[account.id] == nil ? "" : ", out of date"
+        return "\(Int(window.remaining_percent.rounded())) percent\(stale)"
+    }
+    private var usageDetails: some View {
+        DisclosureGroup("Usage details", isExpanded: $usageExpanded) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Text(selected?.label ?? "Selected account").fontWeight(.medium)
+                    Spacer()
+                    Button("Refresh", systemImage: "arrow.clockwise") { Task { await model.refresh(includeUsage: true) } }
+                        .disabled(model.busy).controlSize(.small)
+                }
+                if let account = selected {
+                    if let error = model.usageErrors[account.id] {
+                        Text(error).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                    }
+                    if let usage = model.usages[account.id] {
+                        ForEach(usage.buckets) { bucket in
+                            VStack(alignment: .leading, spacing: 8) {
+                                if usage.buckets.count > 1 { Text(bucket.id).fontWeight(.medium) }
+                                if let primary = bucket.primary { usageWindow(primary) }
+                                if let secondary = bucket.secondary { usageWindow(secondary) }
+                            }
+                        }
+                        if usage.weeklyWindow == nil { Text("Weekly usage not reported.").foregroundStyle(.secondary) }
+                        Text(usage.checkedText + (model.usageErrors[account.id] == nil ? "" : " · out of date")).foregroundStyle(.secondary)
+                    } else { Text("Usage not available yet.").foregroundStyle(.secondary) }
+                    Button("Sign in again…") { model.login(account) }.disabled(model.busy)
+                }
+                Text("Start a new conversation after switching accounts.")
+                    .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }.font(.caption).padding(.top, 8)
+        }.font(.caption).foregroundStyle(.secondary)
+    }
+    private func usageWindow(_ window: UsageWindow) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack {
+                Text(window.title)
+                Spacer()
+                Text("\(Int(window.remaining_percent.rounded()))% left").monospacedDigit()
+            }.foregroundStyle(.primary)
+            if let reset = window.resetText { Text(reset).foregroundStyle(.secondary) }
+        }
     }
     private var addForm: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -132,64 +216,6 @@ struct GatewayView: View {
                     .buttonStyle(.borderedProminent).disabled(model.busy || model.label.trimmingCharacters(in: .whitespaces).isEmpty)
             }
         }.padding(12).background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 12))
-    }
-    private func accountCard(_ account: Account) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack {
-                Image(systemName: account.selected && account.authenticated ? "checkmark.circle.fill" : "person.crop.circle")
-                    .foregroundStyle(account.selected && account.authenticated ? Color.accentColor : Color.secondary).font(.title3)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(account.label).font(.system(.body, weight: .semibold)).lineLimit(1)
-                    Text(!account.authenticated ? "Sign-in needed" : account.selected ? "Selected account" : "Available")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-                Spacer(minLength: 4)
-                if !account.authenticated {
-                    Button("Sign in") { model.login(account) }.buttonStyle(.borderedProminent).controlSize(.small).disabled(model.busy)
-                } else if !account.selected {
-                    Button("Use") { Task { await model.action(["account-select", "--account", account.id], success: "Using \(account.label). Start a new conversation for this account.") } }
-                        .controlSize(.small).disabled(model.busy).accessibilityLabel("Use \(account.label)")
-                }
-                if account.authenticated {
-                    Menu { Button("Sign in again…") { model.login(account) } } label: { Image(systemName: "ellipsis") }
-                        .menuStyle(.borderlessButton).frame(width: 20).disabled(model.busy).accessibilityLabel("Options for \(account.label)")
-                }
-            }
-            if let usage = model.usages[account.id], account.authenticated {
-                ForEach(usage.buckets) { bucket in
-                    VStack(alignment: .leading, spacing: 12) {
-                        if bucket.id != "codex" { Text(bucket.id).font(.caption.weight(.medium)).foregroundStyle(.secondary) }
-                        if let primary = bucket.primary { meter(primary) }
-                        if let secondary = bucket.secondary { meter(secondary) }
-                        if bucket.primary == nil && bucket.secondary == nil { Text("No usage windows reported").font(.caption).foregroundStyle(.secondary) }
-                    }
-                }
-                if usage.buckets.isEmpty { Text("Usage unavailable").font(.caption).foregroundStyle(.secondary) }
-                Text(usage.checkedText + (model.usageErrors[account.id] == nil ? "" : " · out of date"))
-                    .font(.caption2).foregroundStyle(.tertiary)
-            } else if account.authenticated && model.usageErrors[account.id] == nil {
-                Text(model.busy ? "Checking usage…" : "Usage not checked yet").font(.caption).foregroundStyle(.secondary)
-            }
-            if let error = model.usageErrors[account.id], account.authenticated {
-                Text(error).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            }
-        }
-        .padding(12)
-        .background(account.selected && account.authenticated ? Color.accentColor.opacity(0.045) : Color.primary.opacity(0.025), in: RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(account.selected && account.authenticated ? Color.accentColor.opacity(0.22) : Color.primary.opacity(0.08), lineWidth: 1))
-    }
-    private func meter(_ window: UsageWindow) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
-            HStack {
-                Text(window.title).foregroundStyle(.secondary)
-                Spacer()
-                Text("\(Int(window.remaining_percent.rounded()))% left").monospacedDigit().fontWeight(.medium)
-            }.font(.caption)
-            ProgressView(value: window.remaining_percent, total: 100)
-                .tint(window.remaining_percent <= 10 ? .orange : .accentColor)
-                .accessibilityLabel("\(window.title) usage remaining").accessibilityValue("\(Int(window.remaining_percent)) percent")
-            if let reset = window.resetText { Text(reset).font(.caption2).foregroundStyle(.tertiary) }
-        }
     }
     private var connection: some View {
         DisclosureGroup(isExpanded: $connectionExpanded) {
@@ -214,6 +240,11 @@ struct GatewayView: View {
                         if !model.running { Text("Start the gateway first.").font(.caption).foregroundStyle(.secondary) }
                     }
                 }
+                if model.running {
+                    Button("Stop gateway", role: .destructive) { confirmStop = true }.disabled(model.busy)
+                } else if model.selectedReady {
+                    Button("Start gateway") { Task { await model.action(["start", "--background"], success: "Gateway running.") } }.disabled(model.busy)
+                }
                 Text("Codex desktop connection is not yet verified.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }.padding(.top, 10)
@@ -224,17 +255,12 @@ struct GatewayView: View {
     }
     private var footer: some View {
         HStack {
-            if model.running {
-                Button("Stop gateway") { confirmStop = true }.disabled(model.busy)
-            } else if model.selectedReady {
-                Button("Start gateway") { Task { await model.action(["start", "--background"], success: "Gateway running.") } }
-                    .disabled(model.busy)
-            } else {
-                Text("Sign in to get started").foregroundStyle(.secondary)
-            }
+            Button("Add account…") { model.adding.toggle(); model.connecting = false }.disabled(model.busy)
+            Spacer()
+            Button("Connection…") { connectionExpanded.toggle() }
             Spacer()
             Button("Quit") { NSApp.terminate(nil) }.help("Quit menu-bar app; the gateway keeps running")
-        }.buttonStyle(.plain).font(.caption).foregroundStyle(.secondary).padding(.horizontal, 16).padding(.vertical, 12)
+        }.buttonStyle(.plain).font(.caption).foregroundStyle(.secondary).padding(.horizontal, 14).padding(.vertical, 11)
     }
 }
 

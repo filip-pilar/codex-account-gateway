@@ -8,7 +8,7 @@ For an installed profile, `doctor --json` and `status --json` are local readines
 
 ## macOS app
 
-Run `npm run build:macos`, then quit and reopen the built app. Verify the actual menu-bar popover, including its unsigned-in account card; a successful build or standalone preview does not establish popover layout. Use `--preview --demo` for sample usage cards without reading real accounts (see [Mac development](macos.md#development)). Authentication and usage retrieval require a separate user-completed login; fixture success is not evidence of upstream access.
+Run `npm run build:macos` and `swift test --package-path macos`, then quit and reopen the built app. Verify the actual menu-bar popover, including its unsigned-in sign-in row, compact weekly account list, and expanded usage/connection details; a successful build or standalone preview does not establish popover layout. Use `--preview --demo` for sample usage cards without reading real accounts (see [Mac development](macos.md#development)). Authentication and usage retrieval require a separate user-completed login; fixture success is not evidence of upstream access.
 
 ## Optional authorized live smoke
 

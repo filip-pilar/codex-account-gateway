@@ -4,7 +4,7 @@
 
 The intended experience is one desktop login with a choice of accounts supplying usage. The current implementation is a loopback gateway with isolated account profiles and a native Mac menu-bar interface.
 
-Use one account at a time, inspect its remaining usage, and manually switch accounts without changing the local gateway address. Clients currently use the **Codex CLI**; Codex desktop routing and cross-account conversation continuation are unverified. Start a new conversation after switching accounts.
+Use one account at a time, see weekly usage remaining in a compact account list, and manually switch accounts without changing the local gateway address. Clients currently use the **Codex CLI**; Codex desktop routing and cross-account conversation continuation are unverified. Start a new conversation after switching accounts.
 
 ## Get started
 
@@ -106,7 +106,8 @@ Background mode has no restart supervisor. Shutdown cancels active requests. Aut
 
 ```sh
 npm run check         # Local fixtures; no credentials or upstream services
-npm run build:macos   # Build the native app on macOS
+npm run build:macos   # Build the native app and icons on macOS
+swift test --package-path macos  # Native usage-summary fixtures
 ```
 
 The CLI and account logic live in `src/`, SwiftUI in `macos/`, and fixtures in `test/`. Rebuild the app after backend changes because it bundles a copy of `src/`. Quit and reopen it to load a rebuilt executable.

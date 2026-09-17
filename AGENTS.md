@@ -20,6 +20,6 @@
 
 - Keep the implementation small and the machine contract stable. Runtime code is in `src/`, SwiftUI in `macos/`, and fixtures in `test/`.
 - Add focused local fixtures for behavior changes. Run `npm run check` for runtime changes. Tests must not require real credentials, installed Codex, or upstream services.
-- For Mac app changes, run `npm run build:macos`. The app bundles the backend: rebuild after `src/` changes, and quit/reopen before checking the UI. Keep generated `dist/` and `macos/.build/` out of git.
+- For Mac app changes, run `npm run build:macos`; for native behavior changes, also run `swift test --package-path macos`. The app bundles the backend: rebuild after `src/` changes, and quit/reopen before checking the UI. Keep generated `dist/` and `macos/.build/` out of git.
 - Do not add CI or GitHub Actions unless explicitly requested.
 - Use Conventional Commits and `codex/` branches. Publish, select a license, or change package privacy only when requested.

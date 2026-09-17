@@ -7,37 +7,6 @@ struct Account: Decodable, Identifiable {
     let selected: Bool
     let authenticated: Bool
 }
-struct UsageWindow: Decodable {
-    let remaining_percent: Double
-    let window_minutes: Double?
-    let resets_at: Double?
-    var title: String {
-        guard let minutes = window_minutes else { return "Usage window" }
-        if minutes == 10_080 { return "Weekly" }
-        if minutes.truncatingRemainder(dividingBy: 1_440) == 0 { return "\(Int(minutes / 1_440))-day" }
-        if minutes.truncatingRemainder(dividingBy: 60) == 0 { return "\(Int(minutes / 60))-hour" }
-        return "\(Int(minutes))-minute"
-    }
-    var resetText: String? {
-        guard let timestamp = resets_at else { return nil }
-        let date = Date(timeIntervalSince1970: timestamp)
-        if date <= Date() { return "Reset time passed · refresh usage" }
-        return "Resets \(date.formatted(.dateTime.weekday(.abbreviated).hour().minute()))"
-    }
-}
-struct UsageBucket: Decodable, Identifiable {
-    let id: String
-    let primary: UsageWindow?
-    let secondary: UsageWindow?
-}
-struct Usage: Decodable {
-    let checked_at: String
-    let buckets: [UsageBucket]
-    var checkedText: String {
-        guard let date = ISO8601DateFormatter().date(from: checked_at) else { return "Last check unknown" }
-        return "Checked \(date.formatted(date: .omitted, time: .shortened))"
-    }
-}
 struct Reply: Decodable {
     let ok: Bool
     let code: String
