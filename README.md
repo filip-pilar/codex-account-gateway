@@ -1,16 +1,23 @@
-# codex-gateway
+# Codex Account Gateway
 
-**Stay signed into one account. Use usage from multiple ChatGPT accounts.**
+**Switch ChatGPT accounts for Codex CLI without changing your local endpoint.**
 
-The intended experience is one desktop login with a choice of accounts supplying usage. The current implementation is a loopback gateway with isolated account profiles and a native Mac menu-bar interface.
+Keep separate account profiles behind one loopback gateway. Select an account
+from the CLI or native Mac menu-bar app, and view its reported usage limits.
+The gateway uses one account at a time; it does not rotate accounts automatically.
 
-Use one account at a time, see weekly usage remaining in a compact account list, and manually switch accounts without changing the local gateway address. Clients currently use the **Codex CLI**; Codex desktop routing and cross-account conversation continuation are unverified. Start a new conversation after switching accounts.
+**Current scope: Codex CLI.** Desktop routing and cross-account conversation
+continuation remain unverified. Start a new conversation after switching accounts.
+
+Previously `codex-gateway`. The GitHub name is now `codex-account-gateway`;
+existing commands, `CODEX_GATEWAY_HOME`, the `codex-gateway` state directory,
+and the built **Codex Gateway.app** keep their names.
 
 ## Get started
 
 ```sh
-git clone https://github.com/filip-pilar/codex-gateway.git
-cd codex-gateway
+git clone https://github.com/filip-pilar/codex-account-gateway.git
+cd codex-account-gateway
 ```
 
 | Interface | Requirements | Entry point |
@@ -77,6 +84,19 @@ node src/cli.mjs account-add --label Work --json
 ```
 
 Use the returned account ID with `login --account ID` and `account-select --account ID`. Login is interactive; the user completes it. Selection is refused during active requests. Usage reads reported limits through the official CLI without sending inference requests. See [account commands](docs/cli.md#account-selection-and-usage) for the full contract.
+
+## Which repo should I use?
+
+| I want to… | Repo |
+| --- | --- |
+| Switch ChatGPT accounts behind a stable endpoint for Codex CLI | [codex-account-gateway](https://github.com/filip-pilar/codex-account-gateway) |
+| Choose Codex accounts and external models from one experimental Mac app | [codex-switchboard](https://github.com/filip-pilar/codex-switchboard) |
+| Expose Devin/Grok CLI access through local OpenAI- and Anthropic-compatible APIs | [llm-local-gateway](https://github.com/filip-pilar/llm-local-gateway) |
+| Assign different models to main agents and named subagents in Codex or Claude Code | [subagent-model-router](https://github.com/filip-pilar/subagent-model-router) |
+
+These are separate tools. Switchboard bundles its own gateway; it does not
+require the other apps. Subagent Model Router can use LLM Local Gateway as a
+destination.
 
 ## Operation
 
