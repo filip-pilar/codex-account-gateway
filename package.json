@@ -15,5 +15,6 @@
     "check": "node --check src/cli.mjs && node --check src/state.mjs && node --check src/server.mjs && node --check src/accounts.mjs && node --check src/usage.mjs && node --check scripts/smoke-live.mjs && node --test",
     "smoke:live": "node scripts/smoke-live.mjs",
     "build:macos": "sh scripts/build-macos.sh"
-  }
+  },
+  "license": "MIT"
 }

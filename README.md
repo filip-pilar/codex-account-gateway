@@ -134,4 +134,4 @@ The CLI and account logic live in `src/`, SwiftUI in `macos/`, and fixtures in `
 
 Local fixtures cover this package. Historical live tests used Codex CLI 0.149.1 and an experimental proxy: [compatibility](docs/compatibility.md), [sanitized evidence](docs/evidence.md). The usage adapter follows that CLI version’s generated protocol; authenticated usage retrieval remains unverified. Other CLI versions and desktop parity are unverified. This package has not repeated the live suite.
 
-Development rules: [AGENTS.md](AGENTS.md). Checks are local; no CI. npm publication is disabled via `private: true`. No license selected. No third-party implementation vendored. Not an official OpenAI product.
+Development rules: [AGENTS.md](AGENTS.md). Checks are local; no CI. npm publication is disabled via `private: true`. Licensed under [MIT](LICENSE). No third-party implementation vendored. Not an official OpenAI product.
