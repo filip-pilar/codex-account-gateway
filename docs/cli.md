@@ -58,7 +58,7 @@ Background mode is a detached Node process with no body/error log file and no re
 
 ## Account selection and usage
 
-`default` refers to the existing root profile. Added accounts use random IDs returned by `account-add` and `accounts`. `login` and `usage` default to the selected account. `start`, `doctor`, and gateway requests use the selected account. An expired login must be renewed through official login.
+`default` refers to the existing root profile. Added accounts use random IDs returned by `account-add` and `accounts`. `login` and `usage` default to the selected account. `start` and `doctor` accept any signed-in account in the pool. An expired login must be renewed through official login.
 
 ```sh
 node src/cli.mjs account-add --label Work --json
@@ -72,3 +72,19 @@ New success codes: `accounts`, `account_added`, `account_selected`, `usage`. New
 `usage` returns `account`, `checked_at` (ISO timestamp), and `buckets`. Each bucket has `id`, `primary`, and `secondary`; each available window has `remaining_percent`, nullable `window_minutes`, and nullable `resets_at` (Unix seconds). Missing windows are null. Upstream messages, credentials, credits, and unrelated protocol notifications are never printed. Each read has a 15-second deadline and 1 MiB output cap. The official CLI owns authentication and renewal.
 
 Selection is stored privately in `selected-account.json`. Added profile metadata and official CLI state live under `accounts/<id>/`. Selection writes are atomic and serialized through the gateway lifecycle lock. No existing authentication is moved or copied. See [macOS UI](macos.md).
+
+## Automatic weekly routing
+
+Every running gateway checks all signed-in accounts at startup and every 60 seconds after the preceding check finishes, with at most three usage CLI children at once. The selected account stays selected while its reported weekly remaining is greater than 5%. At or below 5%, the next usable account in `accounts` list order is selected, wrapping around. Selection persists across restarts. Other limit windows are not switching triggers.
+
+Only a reported seven-day window from the `codex` bucket (or the sole reported bucket) qualifies. Missing/ambiguous data is unavailable. A transient read failure may use the last successful snapshot for less than five minutes, but never after its reported reset time. A new check must confirm replenished quota; wall-clock time alone does not create quota. Requests already in progress retain their captured credentials and finish normally. No bodies, encrypted reasoning, or client turn-state headers are rewritten; there is no turn tracking or inference replay. The 5% threshold is approximate because reads are periodic and active requests can continue consuming usage.
+
+`status --json` retains its existing runtime codes and adds `routing`:
+
+```json
+{"mode":"automatic","weekly_reserve_percent":5,"state":"ready","account":"default"}
+```
+
+Routing states are `checking_usage`, `ready`, `weekly_reserve_reached`, `usage_unavailable`, and `login_required`. A runtime can be `running` while routing is paused. Exhausted accounts return HTTP 503 / `weekly_reserve_reached` without contacting upstream. Missing fresh usage returns HTTP 503 / `usage_unavailable`; missing credentials retains HTTP 401 / `isolated_login_required`. Background checks resume routing when an account becomes usable. Manual selection does not bypass the reserve.
+
+Shutdown aborts usage reads and terminates their owned CLI children. Usage snapshots are memory-only. The Mac app's opt-in login item and restart monitoring are described in [automatic operation](macos.md#automatic-operation); the CLI does not install a service.

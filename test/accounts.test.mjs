@@ -3,6 +3,10 @@ import assert from 'node:assert/strict';
 import { mkdtemp, realpath, rm, writeFile, stat, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { once } from 'node:events';
+import net from 'node:net';
 import { addAccount, listAccounts, selectedAccount, selectAccount, getAccount, accountRoot } from '../src/accounts.mjs';
 import { ensureState, writePrivate } from '../src/state.mjs';
 import { readUsage, normalizeUsage } from '../src/usage.mjs';
@@ -31,11 +35,25 @@ test('accounts stay isolated; selection requires login and survives subsequent r
   await assert.rejects(getAccount(root, '../codex'), { code: 'invalid_account' });
   await assert.rejects(addAccount(root, 'bad\nlabel'), { code: 'invalid_arguments' });
 }));
-test('account selection rejects symlink state and malformed metadata', () => fixture(async(root, auth) => {
+test('account selection rejects symlink state', () => fixture(async(root, auth) => {
   const account = await addAccount(root, 'A'); await auth(accountRoot(root, account.id));
   await symlink(join(root, 'other'), join(root, 'selected-account.json'));
   await assert.rejects(selectAccount(root, account.id), /Symbolic links/);
   await assert.rejects(selectedAccount(root), /Symbolic links/);
+}));
+test('account selection rejects malformed metadata without replacing the selected account', () => fixture(async (root, auth) => {
+  await auth(root);
+  await selectAccount(root, 'default');
+  const account = await addAccount(root, 'Work');
+  const path = accountRoot(root, account.id);
+  await auth(path);
+
+  for (const metadata of [null, {}, { label: 7 }, { label: ' ' }, { label: 'x'.repeat(61) }]) {
+    await writeFile(join(path, 'account.json'), JSON.stringify(metadata));
+    await assert.rejects(getAccount(root, account.id), { code: 'invalid_account' });
+    await assert.rejects(selectAccount(root, account.id), { code: 'invalid_account' });
+    assert.equal((await selectedAccount(root)).id, 'default');
+  }
 }));
 test('usage preserves separate buckets, clamps percentages, and never invents missing windows', () => {
   const result = normalizeUsage({ rateLimits: { primary: { usedPercent: 12 } }, rateLimitsByLimitId: {
@@ -62,11 +80,28 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
  else if (step === 3 && msg.method === 'account/rateLimits/read') console.log(JSON.stringify({id:2,result:{rateLimits:{primary:{usedPercent:25,windowDurationMins:300,resetsAt:100}}}}));
  else process.exit(9);
 });`, { mode: 0o700 });
-  const result = await readUsage(root, { executable });
+  // Supply overrides in a separate process so the assertion cannot pass just
+  // because the developer's environment happens to have no provider secrets.
+  const script = `
+    import { readUsage } from ${JSON.stringify(new URL('../src/usage.mjs', import.meta.url).href)};
+    console.log(JSON.stringify(await readUsage(${JSON.stringify(root)}, { executable: ${JSON.stringify(executable)} })));
+  `;
+  const { stdout, stderr } = await promisify(execFile)(process.execPath, ['--input-type=module', '--eval', script], {
+    env: {
+      ...process.env,
+      OPENAI_API_KEY: 'fixture-openai-secret',
+      CODEX_API_KEY: 'fixture-codex-secret',
+      OPENAI_BASE_URL: 'http://fixture.invalid',
+      CODEX_HOME: join(root, 'wrong-client-home'),
+    },
+    timeout: 20000,
+  });
+  const result = JSON.parse(stdout);
+  assert.equal(stderr, '');
   assert.equal(result.buckets[0].primary.remaining_percent, 75);
   assert.ok(result.checked_at);
 }));
-test('usage RPC errors are redacted and stalled child processes are bounded', () => fixture(async(root, auth) => {
+test('usage RPC errors are redacted; timeout and cancellation terminate children', () => fixture(async(root, auth) => {
   await auth(root); const executable = join(root, 'codex-fixture');
   await writeFile(executable, `#!${process.execPath}\nconsole.log(JSON.stringify({id:1,error:{message:'private detail'}})); setInterval(()=>{},1000);`, {mode:0o700});
   await assert.rejects(readUsage(root,{executable}), e => e.code === 'usage_unavailable' && !e.message.includes('private'));
@@ -75,4 +110,27 @@ test('usage RPC errors are redacted and stalled child processes are bounded', ()
   await writeFile(executable, `#!${process.execPath}\nsetInterval(()=>{},1000);`, {mode:0o700});
   const start = Date.now(); await assert.rejects(readUsage(root,{executable,timeoutMs:100}), {code:'usage_timeout'});
   assert.ok(Date.now()-start < 2000);
+  const observer = net.createServer();
+  observer.listen(0, '127.0.0.1');
+  await once(observer, 'listening');
+  const cancellation = new AbortController();
+  let socket;
+  try {
+    await writeFile(executable, `#!${process.execPath}
+import net from 'node:net';
+process.on('SIGTERM', () => {});
+net.connect(${observer.address().port}, '127.0.0.1');
+setInterval(() => {}, 1000);
+`, { mode: 0o700 });
+    const connected = once(observer, 'connection', { signal: AbortSignal.timeout(5000) });
+    const reading = assert.rejects(readUsage(root, { executable, signal: cancellation.signal }), { code: 'usage_unavailable' });
+    [socket] = await connected;
+    const exited = once(socket, 'close', { signal: AbortSignal.timeout(5000) });
+    cancellation.abort();
+    await Promise.all([reading, exited]);
+  } finally {
+    cancellation.abort();
+    socket?.destroy();
+    await new Promise(resolve => observer.close(resolve));
+  }
 }));

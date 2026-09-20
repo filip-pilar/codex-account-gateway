@@ -22,9 +22,10 @@ export function normalizeUsage(result) {
 }
 // Ask the official CLI for limits only. Never start a thread or request inference.
 // Credentials, RPC errors and unrelated notifications never leave this function.
-export async function readUsage(root, { executable = 'codex', timeoutMs = 15000 } = {}) {
+export async function readUsage(root, { executable = 'codex', timeoutMs = 15000, signal } = {}) {
   try { await readAuth(root, { create: false }); }
   catch { throw accountError('login_required', 'Sign in to this account first.'); }
+  if (signal?.aborted) throw accountError('usage_unavailable', 'Usage check cancelled.');
   const env = { ...process.env, CODEX_HOME: join(root, 'codex') };
   for (const key of ['OPENAI_API_KEY', 'CODEX_API_KEY', 'OPENAI_BASE_URL']) delete env[key];
   return new Promise((resolve, reject) => {
@@ -34,11 +35,14 @@ export async function readUsage(root, { executable = 'codex', timeoutMs = 15000 
     const finish = (code, value) => {
       if (settled) return;
       settled = true; clearTimeout(timer);
+      signal?.removeEventListener('abort', abort);
       child.stdin.destroy(); child.stdout.destroy(); child.kill('SIGKILL');
       if (code) reject(accountError(code, code === 'usage_timeout' ? 'Usage check timed out.' : 'Usage is unavailable. Check your account login.'));
       else resolve({ checked_at: new Date().toISOString(), buckets: normalizeUsage(value) });
     };
     const timer = setTimeout(() => finish('usage_timeout'), timeoutMs);
+    const abort = () => finish('usage_unavailable');
+    signal?.addEventListener('abort', abort, { once: true });
     const send = value => child.stdin.write(JSON.stringify(value) + '\n');
     child.once('error', () => finish('cli_unavailable'));
     child.once('exit', () => finish('usage_unavailable'));

@@ -2,13 +2,19 @@
 
 ## Local default
 
-Run `npm run check`. Tests use disposable private directories, a fixture `codex` executable, fake credentials, and loopback transports. They do not call the installed CLI, authenticate, or reach model services. Fixtures cover lifecycle, configuration isolation, machine output, forwarding, cancellation/deadlines, private state, account selection, and usage RPC normalization/redaction/timeouts. Checks are local only.
+Run `npm run check`. Tests use disposable private directories, a fixture `codex` executable, fake credentials, and loopback transports. They do not call the installed CLI, authenticate, or reach model services. Fixtures cover lifecycle, configuration isolation, machine output, forwarding, cancellation/deadlines, private state, account selection, and usage RPC normalization/redaction/timeouts. Automatic routing checks cover the exact 5% boundary, concurrent old/new account requests, exhaustion, confirmed resets, stale/missing data, persistence, and shutdown of usage workers. Checks are local only.
 
 For an installed profile, `doctor --json` and `status --json` are local readiness checks. Credential presence is not token validity. An authenticated control response is not proof of upstream access. `doctor` does not create missing state directories.
 
 ## macOS app
 
 Run `npm run build:macos` and `swift test --package-path macos`, then quit and reopen the built app. Verify the actual menu-bar popover, including its unsigned-in sign-in row, compact weekly account list, and expanded usage/connection details; a successful build or standalone preview does not establish popover layout. Use `--preview --demo` for sample usage cards without reading real accounts (see [Mac development](macos.md#development)). Authentication and usage retrieval require a separate user-completed login; fixture success is not evidence of upstream access.
+
+## Local desktop-engine check (2026-09-20)
+
+The installed desktop app's bundled `codex` 0.155.0-alpha.2.6 app-server completed two turns in one ephemeral conversation using a disposable client home, fake account credentials, and the real gateway with a synthetic upstream transport. The provider reported `requiresOpenaiAuth: false`. The first request used fixture account A; after A's weekly reading changed to 5%, the second used B and included the previous assistant response in its input. Both turns completed. No real model service was contacted; no authentication or plugins were copied, and temporary profiles were removed.
+
+This establishes local provider routing and conversation carry-forward in that engine. It does not establish desktop UI/model-picker setup, real cross-account encrypted-state acceptance, or subscription access. It is separate from the credential-free repository test suite and does not replace the historical live evidence below.
 
 ## Optional authorized live smoke
 

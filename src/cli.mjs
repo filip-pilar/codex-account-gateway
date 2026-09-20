@@ -6,10 +6,11 @@ import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
 import net from 'node:net';
 import http from 'node:http';
-import { stateRoot, ensureState, writePrivate, readPrivate, readAuth, noSymlinkParents } from './state.mjs';
+import { stateRoot, ensureState, writePrivate, readPrivate, noSymlinkParents } from './state.mjs';
 import { startServer } from './server.mjs';
 import { selectedAccount, getAccount, listAccounts, addAccount, selectAccount } from './accounts.mjs';
 import { readUsage } from './usage.mjs';
+import { createRouter } from './routing.mjs';
 
 const [command = 'help', ...args] = process.argv.slice(2);
 const json = args.includes('--json');
@@ -63,7 +64,10 @@ function probe(r, action = 'status') {
       res.on('data', chunk => { size += chunk.length; if (size > 1024) finish(false); else chunks.push(chunk); });
       res.on('error', () => finish(false));
       res.on('end', () => {
-        try { finish(res.statusCode === 200 && JSON.parse(Buffer.concat(chunks).toString())?.instanceId === r.instanceId); }
+        try {
+          const value = JSON.parse(Buffer.concat(chunks).toString());
+          finish(res.statusCode === 200 && value?.instanceId === r.instanceId ? value : false);
+        }
         catch { finish(false); }
       });
       res.on('close', () => finish(false));
@@ -104,7 +108,8 @@ async function lockState() {
 async function inspect() {
   const r = await saved();
   if (!r) return { state: 'stopped' };
-  if (await probe(r)) return { state: 'running', port: r.port, pid: r.pid, url: `http://127.0.0.1:${r.port}/v1` };
+  const control = await probe(r);
+  if (control) return { state: 'running', port: r.port, pid: r.pid, url: `http://127.0.0.1:${r.port}/v1`, ...(control.routing ? { routing: control.routing } : {}) };
   return { state: alive(r.pid) ? 'unavailable' : 'stale', port: r.port, pid: r.pid };
 }
 // Serialize short runtime mutations. An interrupted mutation fails closed rather than
@@ -192,7 +197,6 @@ async function background(opts) {
   if (!result.ok) { process.exitCode = 1; output(result); return; }
   output({ ...result, background: true });
 }
-async function activeAuth(options) { return readAuth((await selectedAccount(root)).path, options); }
 async function start(opts, port) {
   if (opts['--background']) return background(opts);
   await ensureState(root);
@@ -206,12 +210,18 @@ async function start(opts, port) {
       if (alive(old.pid)) throw error('runtime_unavailable', 'Recorded process still exists but cannot be verified.', 'status');
       await unlink(runtime);
     }
-    try { await activeAuth(); } catch { throw error('login_required', 'Isolated credentials are missing or unsafe.', 'login'); }
+    if (!(await listAccounts(root)).some(account => account.authenticated)) throw error('login_required', 'Isolated credentials are missing or unsafe.', 'login');
     const r = { pid: process.pid, port, instanceId: randomBytes(16).toString('hex'), controlToken: randomBytes(32).toString('hex') };
     let server, stopping;
-    const stop = () => stopping ??= (async () => { await server.close(); await clearOwned(r.instanceId); })().catch(() => { process.exitCode = 1; });
-    server = await startServer({ port, credentials: () => activeAuth(), onSelect: id => locked(() => selectAccount(root, id)), controlToken: r.controlToken, instanceId: r.instanceId, onStop: stop });
-    try { await writePrivate(runtime, JSON.stringify(r)); } catch (e) { await server.close(); throw e; }
+    const router = createRouter({ root, select: id => locked(() => selectAccount(root, id)) });
+    const stop = () => stopping ??= (async () => {
+      await Promise.all([router.close(), server.close()]);
+      await clearOwned(r.instanceId);
+    })().catch(() => { process.exitCode = 1; });
+    server = await startServer({ port, credentials: router.credentials, onSelect: router.select,
+      routingStatus: router.status, controlToken: r.controlToken, instanceId: r.instanceId, onStop: stop });
+    try { await writePrivate(runtime, JSON.stringify(r)); } catch (e) { await server.close(); await router.close(); throw e; }
+    void router.refresh();
     process.once('SIGINT', stop); process.once('SIGTERM', stop);
     return { current: r };
   });
@@ -269,7 +279,8 @@ CODEX_GATEWAY_HOME selects private state. No global configuration edits.` });
   }
   if (command === 'doctor') {
     const version = await cliVersion();
-    let credentials = 'present'; try { await activeAuth({ create: false }); } catch { credentials = 'missing_or_unsafe'; }
+    let credentials = 'missing_or_unsafe';
+    try { if ((await listAccounts(root)).some(account => account.authenticated)) credentials = 'present'; } catch {}
     let status; try { status = await inspect(); } catch (e) { status = { state: 'unsafe', code: e.code }; }
     const lifecycle_lock = await lockState();
     const selectedPort = opts['--port'] ? port : status.port ?? port;

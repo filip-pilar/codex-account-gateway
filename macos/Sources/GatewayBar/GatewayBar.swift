@@ -37,6 +37,11 @@ struct GatewayView: View {
             Divider()
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
+                    if let notice = model.routing?.notice {
+                        Label(notice, systemImage: "exclamationmark.circle")
+                            .font(.caption).foregroundStyle(.orange)
+                            .fixedSize(horizontal: false, vertical: true).padding(.horizontal, 14)
+                    }
                     if let message = model.message {
                         HStack(alignment: .top, spacing: 8) {
                             Image(systemName: model.isError ? "exclamationmark.circle" : "info.circle")
@@ -112,7 +117,7 @@ struct GatewayView: View {
             } else {
                 HStack(spacing: 5) {
                     Circle().fill(model.running ? Color.green : Color.secondary.opacity(0.5)).frame(width: 5, height: 5)
-                    Text(model.running ? "Running" : model.state.replacingOccurrences(of: "_", with: " ").capitalized)
+                    Text(model.running ? (model.routing?.notice == nil ? "Automatic" : "Paused") : model.state.replacingOccurrences(of: "_", with: " ").capitalized)
                         .font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
             }
@@ -122,7 +127,7 @@ struct GatewayView: View {
         if account.authenticated {
             Button {
                 guard !account.selected else { return }
-                Task { await model.action(["account-select", "--account", account.id], success: "Using \(account.label). Start a new conversation for this account.") }
+                Task { await model.action(["account-select", "--account", account.id], success: "Selected \(account.label). Automatic routing keeps a 5% weekly reserve.") }
             } label: {
                 HStack(spacing: 8) {
                     Image(systemName: "checkmark").font(.system(size: 11, weight: .semibold))
@@ -169,7 +174,7 @@ struct GatewayView: View {
                     Text(selected?.label ?? "Selected account").fontWeight(.medium)
                     Spacer()
                     Button("Refresh", systemImage: "arrow.clockwise") { Task { await model.refresh(includeUsage: true) } }
-                        .disabled(model.busy).controlSize(.small)
+                        .disabled(model.checkingUsage).controlSize(.small)
                 }
                 if let account = selected {
                     if let error = model.usageErrors[account.id] {
@@ -188,7 +193,7 @@ struct GatewayView: View {
                     } else { Text("Usage not available yet.").foregroundStyle(.secondary) }
                     Button("Sign in again…") { model.login(account) }.disabled(model.busy)
                 }
-                Text("Start a new conversation after switching accounts.")
+                Text("Automatically switches accounts at 5% weekly remaining. Requests already running finish on their original account.")
                     .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }.font(.caption).padding(.top, 8)
         }.font(.caption).foregroundStyle(.secondary)
@@ -220,6 +225,14 @@ struct GatewayView: View {
     private var connection: some View {
         DisclosureGroup(isExpanded: $connectionExpanded) {
             VStack(alignment: .leading, spacing: 12) {
+                Toggle("Run automatically", isOn: Binding(get: { model.runAutomatically }, set: { enabled in
+                    Task { await model.setAutomaticRun(enabled) }
+                })).disabled(model.busy)
+                Text("Launches at login and keeps the gateway running. Stop gateway pauses automatic restarts until you click Start.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                if model.startupNeedsApproval {
+                    Button("Allow startup in System Settings…") { model.openLoginSettings() }
+                }
                 HStack {
                     Text(model.endpoint).font(.system(.caption, design: .monospaced))
                         .foregroundStyle(.secondary).textSelection(.enabled)

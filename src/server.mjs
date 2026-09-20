@@ -6,7 +6,7 @@ import { timingSafeEqual } from 'node:crypto';
 const headersToForward = ['content-type','content-encoding','accept','user-agent','openai-beta','originator','session_id','conversation_id','session-id','thread-id','x-codex-routing-hint','x-codex-turn-state','x-codex-turn-metadata','x-openai-internal-codex-responses-lite','x-codex-image-turn-id'];
 const routes = new Map(['/responses','/alpha/search','/images/generations','/images/edits'].map(p => ['/v1'+p, 'https://chatgpt.com/backend-api/codex'+p]));
 const equal = (a,b) => typeof a === 'string' && Buffer.byteLength(a) === Buffer.byteLength(b) && timingSafeEqual(Buffer.from(a),Buffer.from(b));
-export async function startServer({port=8787, credentials, transport=fetch, controlToken, instanceId = 'fixture', onStop=()=>{}, onSelect=null, maxBytes=16*1024*1024, timeoutMs=240000}) {
+export async function startServer({port=8787, credentials, transport=fetch, controlToken, instanceId = 'fixture', onStop=()=>{}, onSelect=null, routingStatus=()=>undefined, maxBytes=16*1024*1024, timeoutMs=240000}) {
   const active = new Set();
   let selecting = false;
   const server = http.createServer(async (req,res) => {
@@ -16,7 +16,7 @@ export async function startServer({port=8787, credentials, transport=fetch, cont
     if ((req.url === '/control/stop' && req.method === 'POST') || (req.url === '/control/status' && req.method === 'GET')) {
       if(!controlToken || !equal(req.headers.authorization,`Bearer ${controlToken}`)) return fail(403,'invalid_control_token');
       res.setHeader('content-type', 'application/json');
-      res.end(JSON.stringify({ instanceId }));
+      res.end(JSON.stringify({ instanceId, routing: routingStatus() }));
       if (req.url === '/control/stop') setImmediate(onStop);
       return;
     }
@@ -61,7 +61,12 @@ export async function startServer({port=8787, credentials, transport=fetch, cont
       const stack=[[parsed,0]];
       while(stack.length) { const [v,d]=stack.pop(); if(d>64) return fail(400,'request_too_deep'); if(v && typeof v==='object') for(const x of Object.values(v)) stack.push([x,d+1]); }
       if(req.url==='/v1/responses' && parsed.stream!==true) return fail(400,'streaming_responses_required');
-      let auth; try {auth=await credentials();} catch {return fail(401,'isolated_login_required');}
+      let auth;
+      try { auth = await credentials(); }
+      catch (e) {
+        if (['weekly_reserve_reached', 'usage_unavailable'].includes(e.code)) return fail(503, e.code);
+        return fail(401, 'isolated_login_required');
+      }
       controller.signal.throwIfAborted();
       const headers=new Headers();
       for(const name of headersToForward) if(typeof req.headers[name]==='string') headers.set(name,req.headers[name]);

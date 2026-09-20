@@ -1,13 +1,10 @@
 # Codex Account Gateway
 
-**Switch ChatGPT accounts for Codex CLI without changing your local endpoint.**
+**Automatically switch ChatGPT accounts for Codex CLI without changing your local endpoint.**
 
-Keep separate account profiles behind one loopback gateway. Select an account
-from the CLI or native Mac menu-bar app, and view its reported usage limits.
-The gateway uses one account at a time; it does not rotate accounts automatically.
+Keep separate account profiles behind one loopback gateway, with usage visibility and controls in the CLI or native Mac menu-bar app. Sign in to your backing accounts once. The gateway checks usage automatically and switches to another account when the current account reaches **5% weekly remaining**. Requests already running finish on their original account. If every account reaches the reserve, new requests pause until fresh usage becomes available.
 
-**Current scope: Codex CLI.** Desktop routing and cross-account conversation
-continuation remain unverified. Start a new conversation after switching accounts.
+**Current scope: Codex CLI.** Connecting the normal Codex desktop app and verifying real cross-account conversation continuation remain separate validation steps; this release does not change your existing desktop configuration.
 
 Previously `codex-gateway`. The GitHub name is now `codex-account-gateway`;
 existing commands, `CODEX_GATEWAY_HOME`, the `codex-gateway` state directory,
@@ -83,7 +80,9 @@ node src/cli.mjs usage --json
 node src/cli.mjs account-add --label Work --json
 ```
 
-Use the returned account ID with `login --account ID` and `account-select --account ID`. Login is interactive; the user completes it. Selection is refused during active requests. Usage reads reported limits through the official CLI without sending inference requests. See [account commands](docs/cli.md#account-selection-and-usage) for the full contract.
+Use the returned account ID with `login --account ID`. Login is interactive; the user completes it. All signed-in profiles join the pool automatically. The gateway keeps its current account while weekly usage is above 5%, then tries the next usable account in list order, wrapping around. It does not switch back merely because an earlier account resets.
+
+Usage checks run on startup and every minute, without inference. The threshold applies to reported usage; polling and requests already in progress can take an account below 5%. Short-window limits are not switching triggers. `account-select --account ID` remains available when idle, subject to the same reserve on subsequent requests. See [account commands](docs/cli.md#account-selection-and-usage).
 
 ## Which repo should I use?
 
@@ -111,7 +110,7 @@ node src/cli.mjs stop --json
 | `stale` | Run `start` to recover or `stop` to remove stale runtime state |
 | `runtime_unavailable`, `unsafe_runtime`, `lifecycle_busy` | Follow [recovery instructions](docs/cli.md#conservative-recovery); do not signal unverified PIDs or delete backing credentials |
 
-Background mode has no restart supervisor. Shutdown cancels active requests. Authentication and renewal are owned by the official CLI; the gateway does not refresh credentials itself.
+Enable **Connection… → Run automatically** in the Mac app to launch at login and keep the gateway running while the app is open. CLI background mode alone has no restart supervisor. Shutdown cancels active requests. Authentication and renewal are owned by the official CLI; occasional sign-in is still required.
 
 ## Boundary
 
@@ -120,14 +119,14 @@ Background mode has no restart supervisor. Shutdown cancels active requests. Aut
 - Bind: `127.0.0.1` only. Host is checked; browser Origin requests are rejected. Inference routes trust local processes; control routes require a private token. Do not expose the port.
 - Caller credentials and the actor eligibility marker are stripped. Only the isolated backing login authenticates upstream; the marker grants no entitlements.
 - Request body/decompression cap: 16 MiB. Total request deadline: four minutes. No inference retries.
-- No gateway-managed credential refresh, model discovery, automatic account rotation, OS service installation, Chat Completions, WebSockets, or remote compaction endpoint.
+- No gateway-managed credential refresh, model discovery, inference retries, Chat Completions, WebSockets, or remote compaction endpoint.
 
 ## Development and verification
 
 ```sh
 npm run check         # Local fixtures; no credentials or upstream services
 npm run build:macos   # Build the native app and icons on macOS
-swift test --package-path macos  # Native usage-summary fixtures
+swift test --package-path macos  # Native usage and automatic-run fixtures
 ```
 
 The CLI and account logic live in `src/`, SwiftUI in `macos/`, and fixtures in `test/`. Rebuild the app after backend changes because it bundles a copy of `src/`. Quit and reopen it to load a rebuilt executable.

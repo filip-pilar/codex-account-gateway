@@ -13,7 +13,7 @@ export async function getAccount(root, id) {
   const path = accountRoot(root, id);
   if (id === 'default') return { id, label: 'Default', path };
   const metadata = await readPrivate(join(path, 'account.json'));
-  if (typeof metadata.label !== 'string' || !metadata.label.trim() || metadata.label.length > 60) throw accountError('invalid_account', 'Account metadata is invalid.');
+  if (typeof metadata?.label !== 'string' || !metadata.label.trim() || metadata.label.length > 60) throw accountError('invalid_account', 'Account metadata is invalid.');
   return { id, label: metadata.label, path };
 }
 export async function selectedAccount(root) {

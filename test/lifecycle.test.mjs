@@ -1,4 +1,4 @@
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
@@ -15,14 +15,44 @@ async function fixture(fn) {
   const base = await realpath(await mkdtemp(join(tmpdir(), 'codex-gateway-cli-')));
   const root = join(base, 'gateway'), bin = join(base, 'bin');
   await mkdir(bin);
-  await writeFile(join(bin, 'codex'), `#!${process.execPath}\nif(process.argv.includes('--version')) { console.log('codex-cli 0.149.1'); } else { if(process.env.OPENAI_API_KEY || process.env.CODEX_API_KEY || process.env.OPENAI_BASE_URL) process.exit(4); console.log('fixture login'); }\n`, {mode:0o700});
+  await writeFile(join(bin, 'codex'), `#!${process.execPath}
+import readline from 'node:readline';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+if (process.argv.includes('--version')) console.log('codex-cli 0.149.1');
+else if (process.argv.includes('app-server')) {
+  readline.createInterface({ input: process.stdin }).on('line', line => {
+    const message = JSON.parse(line);
+    if (message.method === 'initialize') console.log(JSON.stringify({id:1,result:{}}));
+    if (message.method === 'account/rateLimits/read') {
+      let usedPercent = 20;
+      try { usedPercent = JSON.parse(readFileSync(join(process.env.CODEX_HOME, 'fixture-usage.json'), 'utf8')).used; } catch {}
+      console.log(JSON.stringify({id:2,result:{rateLimits:{primary:{usedPercent,windowDurationMins:10080}}}}));
+    }
+  });
+} else {
+  if(process.env.OPENAI_API_KEY || process.env.CODEX_API_KEY || process.env.OPENAI_BASE_URL) process.exit(4);
+  console.log('fixture login');
+}
+`, {mode:0o700});
   const env = {...process.env, CODEX_GATEWAY_HOME:root, PATH:bin};
   const run = (args, extra = {}) => new Promise((resolve, reject) => {
-    const p = spawn(process.execPath, [cli, ...args], {env:{...env,...extra}});
-    let out = '', stderr = '';
-    p.stdout.on('data', b => out += b); p.stderr.on('data', b => stderr += b);
-    const timer = setTimeout(() => {p.kill('SIGKILL'); reject(new Error('CLI fixture timeout'));}, 15000);
-    p.once('error', reject); p.once('close', code => {clearTimeout(timer); resolve({code, out, stderr, value:args.includes('--json') ? JSON.parse(out) : null});});
+    const p = spawn(process.execPath, [cli, ...args], { env: { ...env, ...extra } });
+    let out = '', stderr = '', timedOut = false;
+    p.stdout.on('data', b => out += b);
+    p.stderr.on('data', b => stderr += b);
+    const timer = setTimeout(() => {
+      timedOut = true;
+      p.kill('SIGKILL');
+    }, 15000);
+    p.once('error', err => { clearTimeout(timer); reject(err); });
+    p.once('close', code => {
+      clearTimeout(timer);
+      if (timedOut) return reject(new Error('CLI fixture timeout'));
+      try {
+        resolve({ code, out, stderr, value: args.includes('--json') ? JSON.parse(out) : null });
+      } catch (err) { reject(err); }
+    });
   });
   const auth = async () => { const home=await ensureState(root); await writePrivate(join(home,'auth.json'), JSON.stringify({auth_mode:'chatgpt',tokens:{access_token:'fixture',account_id:'fixture'}})); };
   const freePort = async () => {const s=net.createServer();s.listen(0,'127.0.0.1');await once(s,'listening');const port=s.address().port;await new Promise(r=>s.close(r));return port;};
@@ -131,43 +161,144 @@ test('FIFO and null runtime state return safe errors instead of hanging', {timeo
   assert.equal((await run(['doctor','--json'])).value.credentials,'missing_or_unsafe');
 }));
 
-test('doctor deadline terminates an unresponsive CLI version child', {timeout:8000}, () => fixture(async ({run,base}) => {
-  await writeFile(join(base,'bin','codex'),`#!${process.execPath}\nprocess.on('SIGTERM',()=>{});setInterval(()=>{},1000);`,{mode:0o700});
-  const began=Date.now();const result=await run(['doctor','--json']);
-  assert.equal(result.value.cli.version,null);assert.equal(result.code,1);
-  assert.ok(Date.now()-began<5000,'version timeout must also release child process handles');
-}));
-
-test('control probes bound response reads and deadlines without following redirects', {timeout:8000}, () => fixture(async ({run,auth,root}) => {
-  await auth();let mode='oversized';const paths=[];
-  const server=http.createServer((req,res)=>{
-    paths.push(req.url);
-    if(mode==='oversized')res.end('x'.repeat(2048));
-    else if(mode==='redirect'){res.writeHead(302,{location:'/unexpected'});res.end();}
-    else {res.writeHead(200);res.flushHeaders();}
-  });
-  server.listen(0,'127.0.0.1');await once(server,'listening');
+test('doctor deadline terminates an unresponsive CLI version child', { timeout: 30000 }, () => fixture(async ({ run, base }) => {
+  // The connection closes when the fixture child exits. This checks termination
+  // directly instead of treating a fast doctor response as proof of cleanup.
+  const observer = net.createServer();
+  observer.listen(0, '127.0.0.1');
+  await once(observer, 'listening');
+  const waiting = new AbortController();
+  let socket;
   try {
-    await writePrivate(join(root,'runtime.json'),JSON.stringify({pid:process.pid,port:server.address().port,instanceId:'a'.repeat(32),controlToken:'b'.repeat(64)}));
-    for(const selected of ['oversized','redirect','stalled']) {
-      mode=selected;const result=await run(['status','--json']);
-      assert.equal(result.value.code,'unavailable');assert.equal(result.stderr,'');
-    }
-    assert.deepEqual(paths,Array(3).fill('/control/status'));
-  }finally{await rm(join(root,'runtime.json'));server.closeAllConnections();await new Promise(r=>server.close(r));}
+    await writeFile(join(base, 'bin', 'codex'), `#!${process.execPath}
+import net from 'node:net';
+process.on('SIGTERM', () => {});
+net.connect(${observer.address().port}, '127.0.0.1');
+setInterval(() => {}, 1000);
+`, { mode: 0o700 });
+    const signal = AbortSignal.any([waiting.signal, AbortSignal.timeout(15000)]);
+    const exited = once(observer, 'connection', { signal }).then(async ([connected]) => {
+      socket = connected;
+      await once(socket, 'close', { signal });
+    });
+    const [result] = await Promise.all([run(['doctor', '--json']), exited]);
+    assert.equal(result.value.cli.version, null);
+    assert.equal(result.code, 1);
+  } finally {
+    waiting.abort();
+    socket?.destroy();
+    await new Promise(resolve => observer.close(resolve));
+  }
 }));
 
-test('account CLI selects on a running gateway without changing its address or process', () => fixture(async ({run,auth,root,freePort}) => {
-  await auth(); const added=await run(['account-add','--label','Second','--json']);
-  assert.equal(added.value.code,'account_added'); const id=added.value.account.id;
-  assert.equal((await run(['account-select','--account',id,'--json'])).value.code,'login_required');
-  const home=await ensureState(join(root,'accounts',id));
-  await writePrivate(join(home,'auth.json'),JSON.stringify({auth_mode:'chatgpt',tokens:{access_token:'second',account_id:'second'}}));
-  const started=await run(['start','--background','--port',String(await freePort()),'--json']);
-  assert.equal((await run(['account-select','--account',id,'--json'])).value.code,'account_selected');
-  const status=await run(['status','--json']);assert.equal(status.value.pid,started.value.pid);assert.equal(status.value.url,started.value.url);
-  const accounts=(await run(['accounts','--json'])).value.accounts;
-  assert.equal(accounts.find(a=>a.selected).id,id);
-  assert.equal((await run(['account-select','--account','default','--json'])).value.code,'account_selected');
-  assert.equal((await run(['account-select','--account','../../oops','--json'])).value.code,'invalid_account');
+for (const mode of ['oversized', 'redirect', 'stalled']) {
+  test(`control probe rejects ${mode} responses`, { timeout: 30000 }, () => fixture(async ({ run, auth, root }) => {
+    await auth();
+    const paths = [], instanceId = 'a'.repeat(32);
+    const server = http.createServer((req, res) => {
+      paths.push(req.url);
+      if (mode === 'oversized') {
+        // Valid identity and JSON: removing the size cap must make this fail.
+        res.end(JSON.stringify({ instanceId, padding: 'x'.repeat(2048) }));
+      } else if (mode === 'redirect') {
+        if (req.url === '/control/status') res.writeHead(302, { location: '/unexpected' });
+        res.end(JSON.stringify({ instanceId }));
+      } else {
+        res.writeHead(200);
+        res.flushHeaders();
+      }
+    });
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    try {
+      await writePrivate(join(root, 'runtime.json'), JSON.stringify({
+        pid: process.pid, port: server.address().port, instanceId, controlToken: 'b'.repeat(64),
+      }));
+      const result = await run(['status', '--json']);
+      assert.equal(result.code, 1);
+      assert.equal(result.value.code, 'unavailable');
+      assert.equal(result.stderr, '');
+      assert.deepEqual(paths, ['/control/status']);
+    } finally {
+      await rm(join(root, 'runtime.json'));
+      server.closeAllConnections();
+      await new Promise(resolve => server.close(resolve));
+    }
+  }));
+}
+
+test('account CLI switches request credentials without changing the gateway address or process', () => fixture(async ({ run, auth, root, base, freePort }) => {
+  await auth();
+  const added = await run(['account-add', '--label', 'Second', '--json']);
+  assert.equal(added.value.code, 'account_added');
+  const id = added.value.account.id;
+  assert.equal((await run(['account-select', '--account', id, '--json'])).value.code, 'login_required');
+  const home = await ensureState(join(root, 'accounts', id));
+  await writePrivate(join(home, 'auth.json'), JSON.stringify({ auth_mode: 'chatgpt', tokens: { access_token: 'second-token', account_id: 'second-account' } }));
+
+  // Replace only the child gateway's upstream transport. All CLI, account-state,
+  // control, and forwarding code stays real; no request can reach a service.
+  const transport = join(base, 'fixture-transport.mjs');
+  await writeFile(transport, `
+globalThis.fetch = async (url, options) => {
+  if (url !== 'https://chatgpt.com/backend-api/codex/responses') throw new Error('Unexpected fixture route');
+  return Response.json({
+    authorization: options.headers.get('authorization'),
+    account: options.headers.get('chatgpt-account-id'),
+  });
+};
+`);
+  const started = await run(['start', '--background', '--port', String(await freePort()), '--json'], {
+    NODE_OPTIONS: `--import=${pathToFileURL(transport).href}`,
+  });
+  assert.equal(started.value.code, 'started');
+  const requestCredentials = async () => {
+    const response = await fetch(`${started.value.url}/responses`, {
+      method: 'POST',
+      body: JSON.stringify({ model: 'fixture', stream: true, input: [] }),
+      signal: AbortSignal.timeout(10000),
+    });
+    assert.equal(response.status, 200);
+    return response.json();
+  };
+  assert.deepEqual(await requestCredentials(), { authorization: 'Bearer fixture', account: 'fixture' });
+  assert.equal((await run(['account-select', '--account', id, '--json'])).value.code, 'account_selected');
+  assert.deepEqual(await requestCredentials(), { authorization: 'Bearer second-token', account: 'second-account' });
+
+  const status = await run(['status', '--json']);
+  assert.equal(status.value.pid, started.value.pid);
+  assert.equal(status.value.url, started.value.url);
+  const accounts = (await run(['accounts', '--json'])).value.accounts;
+  assert.equal(accounts.find(a => a.selected).id, id);
+  assert.equal((await run(['account-select', '--account', 'default', '--json'])).value.code, 'account_selected');
+  assert.deepEqual(await requestCredentials(), { authorization: 'Bearer fixture', account: 'fixture' });
+  assert.equal((await run(['account-select', '--account', '../../oops', '--json'])).value.code, 'invalid_account');
+}));
+
+test('CLI automatically selects a usable account and persists it across restart', () => fixture(async ({ run, root, auth, freePort }) => {
+  const id = (await run(['account-add', '--label', 'Second', '--json'])).value.account.id;
+  const home = await ensureState(join(root, 'accounts', id));
+  await writePrivate(join(home, 'auth.json'), JSON.stringify({ auth_mode: 'chatgpt', tokens: { access_token: 'fixture-second', account_id: 'fixture-second' } }));
+  // Local readiness and startup don't require the currently selected Default to
+  // be signed in when another account is ready.
+  assert.equal((await run(['doctor', '--json'])).value.credentials, 'present');
+  const port = await freePort();
+  for (let attempt = 0; attempt < 2; attempt++) {
+    assert.equal((await run(['start', '--background', '--port', String(port), '--json'])).value.code, 'started');
+    let status;
+    const deadline = Date.now() + 5000;
+    do {
+      status = (await run(['status', '--json'])).value;
+      if (status.routing?.state === 'ready') break;
+      await new Promise(resolve => setTimeout(resolve, 25));
+    } while (Date.now() < deadline);
+    assert.deepEqual(status.routing, { mode: 'automatic', weekly_reserve_percent: 5, state: 'ready', account: id });
+    assert.equal((await run(['accounts', '--json'])).value.accounts.find(item => item.selected).id, id);
+    assert.equal((await run(['stop', '--json'])).value.code, 'stopped');
+    // Default now has a login but is at the reserve. Restart must keep Second.
+    if (attempt === 0) {
+      await auth();
+      await writeFile(join(root, 'codex', 'fixture-usage.json'), JSON.stringify({ used: 95 }));
+    }
+  }
 }));

@@ -1,5 +1,7 @@
 import AppKit
 import SwiftUI
+import ServiceManagement
+import UserNotifications
 
 struct Account: Decodable, Identifiable {
     let id: String
@@ -16,8 +18,9 @@ struct Reply: Decodable {
     let launch_command: String?
     let client_dir: String?
     let url: String?
+    let routing: Routing?
     struct AddedAccount: Decodable { let id: String }
-    enum CodingKeys: String, CodingKey { case ok, code, accounts, account, config, launch_command, client_dir, url }
+    enum CodingKeys: String, CodingKey { case ok, code, accounts, account, config, launch_command, client_dir, url, routing }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         ok = try c.decode(Bool.self, forKey: .ok)
@@ -28,6 +31,7 @@ struct Reply: Decodable {
         launch_command = try c.decodeIfPresent(String.self, forKey: .launch_command)
         client_dir = try c.decodeIfPresent(String.self, forKey: .client_dir)
         url = try c.decodeIfPresent(String.self, forKey: .url)
+        routing = try c.decodeIfPresent(Routing.self, forKey: .routing)
     }
 }
 struct GatewayFailure: Error { let code: String }
@@ -98,6 +102,10 @@ func shellQuote(_ value: String) -> String { "'" + value.replacingOccurrences(of
     @Published var state = "Checking"
     @Published var endpoint = "http://127.0.0.1:8787/v1"
     @Published var busy = false
+    @Published var checkingUsage = false
+    @Published var runAutomatically: Bool
+    @Published var routing: Routing?
+    @Published var startupNeedsApproval = false
     @Published var message: String?
     @Published var isError = false
     @Published var adding = false
@@ -106,39 +114,109 @@ func shellQuote(_ value: String) -> String { "'" + value.replacingOccurrences(of
     @Published var modelID = ""
     @Published var loginPending = false
     private let backend = Backend()
+    private var automatic: AutomaticRun
+    private var monitoring: Task<Void, Never>?
+    private var polling = false
     private var lastUsageRefresh = Date.distantPast
     private let demo = ProcessInfo.processInfo.arguments.contains("--demo")
     var running: Bool { state == "running" }
     var activeName: String { accounts.first(where: \.selected)?.label ?? "No account" }
-    var selectedReady: Bool { accounts.contains { $0.selected && $0.authenticated } }
+    var selectedReady: Bool { accounts.contains { $0.authenticated } }
+
+    init() {
+        let enabled = UserDefaults.standard.bool(forKey: "runAutomatically")
+        runAutomatically = enabled
+        automatic = AutomaticRun(enabled: enabled, paused: UserDefaults.standard.bool(forKey: "gatewayPaused"))
+        if demo { loadDemo(); return }
+        monitoring = Task { [weak self] in
+            while !Task.isCancelled {
+                await self?.poll()
+                try? await Task.sleep(for: .seconds(10))
+            }
+        }
+    }
+
+    deinit { monitoring?.cancel() }
 
     func refresh(includeUsage: Bool = false) async {
-        guard !busy else { return }
         if demo { loadDemo(); return }
-        busy = true; defer { busy = false }
+        await poll()
+        guard !checkingUsage, includeUsage || Date().timeIntervalSince(lastUsageRefresh) > 300 else { return }
+        checkingUsage = true; defer { checkingUsage = false }
+        for account in accounts where account.authenticated {
+            do {
+                let data = try await backend.run(["usage", "--account", account.id])
+                let reply = try JSONDecoder().decode(Reply.self, from: data)
+                guard reply.ok else { throw GatewayFailure(code: reply.code) }
+                usages[account.id] = try JSONDecoder().decode(Usage.self, from: data)
+                usageErrors[account.id] = nil
+            } catch { usageErrors[account.id] = readable(error) }
+        }
+        lastUsageRefresh = Date()
+    }
+
+    private func poll() async {
+        guard !busy, !polling, !demo else { return }
+        polling = true; defer { polling = false }
         do {
             let status = try await backend.reply(["status"])
             state = status.code
+            routing = status.routing
             if let url = status.url { endpoint = url }
             let listing = try await backend.reply(["accounts"])
             guard listing.ok else { throw GatewayFailure(code: listing.code) }
             accounts = listing.accounts ?? []
-            if includeUsage || Date().timeIntervalSince(lastUsageRefresh) > 300 {
-                for account in accounts where account.authenticated {
-                    do {
-                        let data = try await backend.run(["usage", "--account", account.id])
-                        let reply = try JSONDecoder().decode(Reply.self, from: data)
-                        guard reply.ok else { throw GatewayFailure(code: reply.code) }
-                        usages[account.id] = try JSONDecoder().decode(Usage.self, from: data)
-                        usageErrors[account.id] = nil
-                    } catch { usageErrors[account.id] = readable(error) }
-                }
-                lastUsageRefresh = Date()
+            startupNeedsApproval = runAutomatically && SMAppService.mainApp.status != .enabled
+            if let notice = automatic.attention(for: routing) { notifyAttention(notice) }
+            if !busy && automatic.shouldStart(state: state, hasAccount: selectedReady) {
+                busy = true; defer { busy = false }
+                let started = try await backend.reply(["start", "--background"])
+                guard started.ok else { throw GatewayFailure(code: started.code) }
+                state = "running"
+                if let url = started.url { endpoint = url }
             }
         } catch { report(error) }
     }
+
+    func setAutomaticRun(_ enabled: Bool) async {
+        guard !busy, !demo else { return }
+        busy = true
+        do {
+            if enabled {
+                if SMAppService.mainApp.status != .enabled { try SMAppService.mainApp.register() }
+                _ = try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound])
+            } else {
+                try await SMAppService.mainApp.unregister()
+            }
+            runAutomatically = enabled
+            UserDefaults.standard.set(enabled, forKey: "runAutomatically")
+            UserDefaults.standard.set(false, forKey: "gatewayPaused")
+            automatic = AutomaticRun(enabled: enabled, paused: false)
+            startupNeedsApproval = enabled && SMAppService.mainApp.status != .enabled
+        } catch {
+            message = "Could not change automatic startup. Move the app to Applications and check System Settings → General → Login Items."
+            isError = true
+        }
+        busy = false
+        await poll()
+    }
+
+    func openLoginSettings() { SMAppService.openSystemSettingsLoginItems() }
+
+    private func notifyAttention(_ text: String) {
+        let content = UNMutableNotificationContent()
+        content.title = "Codex Gateway needs attention"
+        content.body = text
+        let request = UNNotificationRequest(identifier: "gateway-attention", content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(request) { _ in }
+    }
     func action(_ args: [String], success: String) async {
         guard !busy, !demo else { return }
+        // Persist the user's intent before stopping, so monitoring cannot undo it.
+        if args.first == "stop" || args.first == "start" {
+            automatic.paused = args.first == "stop"
+            UserDefaults.standard.set(automatic.paused, forKey: "gatewayPaused")
+        }
         busy = true
         do {
             let reply = try await backend.reply(args)
@@ -146,7 +224,7 @@ func shellQuote(_ value: String) -> String { "'" + value.replacingOccurrences(of
             message = success; isError = false
         } catch { report(error) }
         busy = false
-        await refresh()
+        await poll()
     }
     func add() async {
         guard !busy, !demo else { return }
@@ -228,6 +306,7 @@ func shellQuote(_ value: String) -> String { "'" + value.replacingOccurrences(of
     }
     private func loadDemo() {
         state = "running"
+        routing = Routing(mode: "automatic", weekly_reserve_percent: 5, state: "ready", account: "default")
         accounts = [Account(id: "default", label: "Personal", selected: true, authenticated: true), Account(id: "second", label: "Work", selected: false, authenticated: true), Account(id: "third", label: "Extra", selected: false, authenticated: false)]
         usages = ["default": Usage(checked_at: ISO8601DateFormatter().string(from: Date()), buckets: [UsageBucket(id: "codex", primary: UsageWindow(remaining_percent: 36, window_minutes: 300, resets_at: Date().addingTimeInterval(7200).timeIntervalSince1970), secondary: UsageWindow(remaining_percent: 72, window_minutes: 10080, resets_at: Date().addingTimeInterval(172800).timeIntervalSince1970))]), "second": Usage(checked_at: ISO8601DateFormatter().string(from: Date()), buckets: [UsageBucket(id: "codex", primary: UsageWindow(remaining_percent: 100, window_minutes: 300, resets_at: Date().addingTimeInterval(12000).timeIntervalSince1970), secondary: UsageWindow(remaining_percent: 85, window_minutes: 10080, resets_at: Date().addingTimeInterval(300000).timeIntervalSince1970))])]
         message = "Design preview · sample accounts and usage"; isError = false
