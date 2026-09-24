@@ -89,6 +89,15 @@ export async function startServer({port=8787, credentials, transport=fetch, cont
     } catch { if(!res.headersSent) fail(controller.signal.aborted?504:502,controller.signal.aborted?'upstream_timeout':'upstream_unavailable'); else res.destroy(); }
     finally { clearTimeout(timer); active.delete(abort); }
   });
+  server.on('upgrade', (req, socket) => {
+    // Codex treats 426 as an immediate HTTP fallback; a 404 triggers retries.
+    const local = !req.headers.origin && req.headers.host === `127.0.0.1:${server.address()?.port}`;
+    const responses = req.method === 'GET' && req.url === '/v1/responses' && req.headers.upgrade?.toLowerCase() === 'websocket';
+    const status = !local ? '403 Forbidden' : responses ? '426 Upgrade Required' : '404 Not Found';
+    socket.on('error', () => socket.destroy());
+    socket.end(`HTTP/1.1 ${status}\r\nContent-Length: 0\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n`);
+    socket.destroySoon();
+  });
   server.requestTimeout=timeoutMs; server.headersTimeout=10000;
   server.listen(port,'127.0.0.1'); await once(server,'listening');
   return { port:server.address().port, close:()=>new Promise(resolve=>{for (const abort of active) abort(); server.close(resolve);server.closeAllConnections();}) };

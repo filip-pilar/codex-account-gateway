@@ -1,35 +1,23 @@
-# Verification without repeating the investigation
+# Verification
 
-## Local default
+## Local checks
 
-Run `npm run check`. Tests use disposable private directories, a fixture `codex` executable, fake credentials, and loopback transports. They do not call the installed CLI, authenticate, or reach model services. Fixtures cover lifecycle, configuration isolation, machine output, forwarding, cancellation/deadlines, private state, account selection, and usage RPC normalization/redaction/timeouts. Automatic routing checks cover the exact 5% boundary, concurrent old/new account requests, exhaustion, confirmed resets, stale/missing data, persistence, and shutdown of usage workers. Checks are local only.
+Run `npm run check` for credential-free gateway fixtures. They use disposable profiles, a fake `codex` executable, and synthetic loopback transports. They cover lifecycle, forwarding, cancellation, account isolation, usage parsing, and automatic switching. For the native app, run `npm run build:macos` and `swift test --package-path macos`; quit and reopen the app after rebuilding.
 
-For an installed profile, `doctor --json` and `status --json` are local readiness checks. Credential presence is not token validity. An authenticated control response is not proof of upstream access. `doctor` does not create missing state directories.
+For an installed profile, `doctor --json` and `status --json` check local readiness. Credential presence and a running gateway do not prove upstream access.
 
-## macOS app
+## Desktop route evidence and limits
 
-Run `npm run build:macos` and `swift test --package-path macos`, then quit and reopen the built app. Verify the actual menu-bar popover, including its unsigned-in sign-in row, compact weekly account list, and expanded usage/connection details; a successful build or standalone preview does not establish popover layout. Use `--preview --demo` for sample usage cards without reading real accounts (see [Mac development](macos.md#development)). Authentication and usage retrieval require a separate user-completed login; fixture success is not evidence of upstream access.
+An authorized turn in an existing Desktop task completed through the gateway using an alternate backing profile. A temporary local trace recorded one upstream `POST /v1/responses` with that profile selected at credential injection and an HTTP 200 response. The account's reported weekly remaining changed after the turn. This verifies the selected backing credentials for that request; coarse usage percentages cannot precisely attribute a single turn's cost.
 
-## Local desktop-engine check (2026-09-20)
+That live check encountered WebSocket retries before HTTP fallback. The gateway now returns HTTP 426 for Responses WebSocket handshakes. A localhost-only check using the bundled Codex engine (`0.155.0-alpha.16.3`), fake credentials, and a synthetic upstream reached HTTP forwarding in about 200 ms, with the backing credentials correctly substituted. This verifies transport negotiation without real inference; it does not establish compatibility across all models, tasks, or earlier conversation context. The temporary trace server was stopped after the live check; route tracing is not part of the shipped gateway.
 
-The installed desktop app's bundled `codex` 0.155.0-alpha.2.6 app-server completed two turns in one ephemeral conversation using a disposable client home, fake account credentials, and the real gateway with a synthetic upstream transport. The provider reported `requiresOpenaiAuth: false`. The first request used fixture account A; after A's weekly reading changed to 5%, the second used B and included the previous assistant response in its input. Both turns completed. No real model service was contacted; no authentication or plugins were copied, and temporary profiles were removed.
+## Optional live smoke
 
-This establishes local provider routing and conversation carry-forward in that engine. It does not establish desktop UI/model-picker setup, real cross-account encrypted-state acceptance, or subscription access. It is separate from the credential-free repository test suite and does not replace the historical live evidence below.
-
-## Optional authorized live smoke
-
-Real inference requires explicit session authorization. The following is a quota-consuming experiment, not a prerequisite for installation. Choose a model available to the backing account and first establish `status --json` reports `running`.
+Real inference consumes quota and requires explicit authorization for each bounded check. It is not needed for installation. After `status --json` reports `running`, choose a model available to the backing account:
 
 ```sh
 npm run smoke:live -- --allow-inference --model MODEL
 ```
 
-The script sends at most **one** streaming Responses request to the selected profile, with low reasoning, no tools, no retries, a 30-second client deadline, and a 1 MiB response read cap. It requires both text and a completion event. It outputs only success/status metadata; no response text, private reasoning, credentials, or session files are saved. The npm wrapper prints its ordinary banner; invoke `node scripts/smoke-live.mjs ...` directly if a single JSON result is required.
-
-A rejection, timeout, or incomplete stream is a failed check. Missing completion is not zero usage. Do not automatically retry, fall back to a different model, invoke images, or expand into the historic suite. A 401 means run official isolated login again before a separately authorized retry. Other failures need diagnosis; response details are intentionally not printed. Opening an ordinary client session is not an enforced request-budget substitute for this check.
-
-The script is locally fixture-tested; **no live smoke of this extracted package has been performed**. A successful future smoke would establish basic package connectivity only, not re-certify every historical capability.
-
-## Existing live evidence
-
-Use [compatibility](compatibility.md) and [evidence](evidence.md) as the baseline. The research already exercised tools, agents, compaction, search, and images. Preserve those results and their corrections; do not rerun them merely because the package moved to a new repository.
+The script sends at most one streaming Responses request with low reasoning, no tools, no retries, a 30-second deadline, and a 1 MiB read cap. It prints status metadata without response text, private reasoning, or credentials. A rejection, timeout, or incomplete stream is a failed check; do not automatically retry or expand it into a larger suite. The script is fixture-tested but has not been run against a live upstream from this package.

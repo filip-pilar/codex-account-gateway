@@ -12,7 +12,14 @@ Invoke `node src/cli.mjs COMMAND`. No global installation is required. `CODEX_GA
 | `setup` | required `--model MODEL`; `--port NUMBER`, `--client-dir NEW_ABSOLUTE_DIRECTORY`, `--json` | Return TOML or explicitly create a new private client directory |
 | `accounts` | none | List labels, selected profile, and local credential presence; no upstream call |
 | `account-add` | required `--label NAME` | Create a private unsigned-in account with a random ID |
+| `account-rename` | required `--account ID`, `--label NAME` | Rename a profile without changing credentials or selection |
+| `global-status` | none | Inspect the Codex gateway connection |
+| `global-enable` | optional `--port NUMBER` | Connect new and existing OpenAI tasks to the gateway |
+| `global-disable` | none | Restore both connection settings |
 | `account-select` | required `--account ID` | Select an authenticated profile; refuse switching during active requests |
+| `openai-route-status` | none | Compatibility alias for `global-status` |
+| `openai-route-enable` | optional `--port NUMBER` | Compatibility alias for `global-enable` |
+| `openai-route-disable` | none | Compatibility alias for `global-disable` |
 | `usage` | `--account ID` | Read usage through official CLI app-server; no inference |
 | `help` | `--json` | Usage |
 
@@ -43,10 +50,21 @@ Exit 0: requested operation succeeded. Exit 1: operational failure or unmet read
 | `start_timeout`, `start_failed`, `stop_timeout` | Inspect status/doctor before retrying |
 | `invalid_arguments` | Correct invocation using this reference |
 | `permission_denied`, `path_missing`, `operation_failed` | Inspect local paths/permissions; do not dump private files |
+| `openai_route_conflict` | Inspect the user-level config; an existing override or changed managed block was left untouched |
 
 `doctor` includes `profile`, Node support/version, parsed CLI version and historical-baseline match, credential presence, runtime state, lifecycle lock presence, selected port availability, and `next_action`. A different CLI version is reported, not blocked: it is unverified rather than necessarily incompatible. A present or unsafe lifecycle lock makes local readiness fail and requests private-state inspection; the diagnostic never removes it. A free port check is advisory; `start` is the authoritative bind check. `doctor` does not establish that gateway/client configuration match.
 
 `setup` validates a simple model identifier and requires an explicitly named model. Creation requires a new directory with an existing parent, rejects symlink parents and overlap with gateway state, this repository, or the current client home, and writes private configuration exclusively. It does not modify existing files. `launch` contains executable, args, env, and unset_env fields; `launch_command` is a POSIX shell equivalent. Remove inherited provider API key/base URL overrides when launching.
+
+## Codex connection
+
+**Settings → Use gateway in Codex** and `global-enable` control the same connection. Enabling updates both the default provider for new tasks and the built-in `openai` endpoint used by existing OpenAI tasks. Disabling removes both managed routes and restores the prior default provider. Restart Codex to load either change. Tasks saved with unrelated custom providers are unaffected; tasks saved with `codex-gateway` require its provider definition while using the gateway.
+
+Both settings are validated and written atomically in `~/.codex/config.toml`. Edited markers and unmanaged overrides are refused; authentication, `chatgpt_base_url`, models, and task histories are untouched. Use the running gateway's port from `status --json`; the default is 8787. `global-status` returns `enabled: true` when either managed route exists and `needs_update: true` when they are incomplete or inconsistent. Enable again to repair them, or disable to remove both. The Mac app shows **Update Connection** when needed.
+
+The older `openai-route-*` commands are aliases for these same operations, retaining their JSON response codes and `route` field. They no longer toggle a separate setting.
+
+The gateway serves HTTP streaming. WebSocket handshakes receive HTTP 426 so compatible Codex engines switch to HTTP immediately. See [verification](verification.md) for tested scope.
 
 ## Conservative recovery
 
