@@ -4,11 +4,9 @@
 
 Keep separate account profiles behind one loopback gateway, with usage visibility and controls in the CLI or native Mac menu-bar app. Sign in to your backing accounts once. The gateway checks usage automatically and switches to another account when the current account reaches **5% weekly remaining**. Requests already running finish on their original account. If every account reaches the reserve, new requests pause until fresh usage becomes available.
 
-**Current scope: Codex CLI.** Connecting the normal Codex desktop app and verifying real cross-account conversation continuation remain separate validation steps; this release does not change your existing desktop configuration.
+**Current scope: Codex CLI and an opt-in Desktop connection.** A single existing-task turn completed through an alternate backing profile; broader desktop compatibility is unverified.
 
-Previously `codex-gateway`. The GitHub name is now `codex-account-gateway`;
-existing commands, `CODEX_GATEWAY_HOME`, the `codex-gateway` state directory,
-and the built **Codex Gateway.app** keep their names.
+**Use gateway in Codex** in the Mac app, or `global-enable` in the CLI, connects new and existing OpenAI tasks together. Switching it off restores both settings. The gateway requests immediate HTTP fallback from WebSocket clients. See [connection setup](docs/cli.md#codex-connection) and [verification](docs/verification.md).
 
 ## Get started
 
@@ -84,19 +82,6 @@ Use the returned account ID with `login --account ID`. Login is interactive; the
 
 Usage checks run on startup and every minute, without inference. The threshold applies to reported usage; polling and requests already in progress can take an account below 5%. Short-window limits are not switching triggers. `account-select --account ID` remains available when idle, subject to the same reserve on subsequent requests. See [account commands](docs/cli.md#account-selection-and-usage).
 
-## Which repo should I use?
-
-| I want to… | Repo |
-| --- | --- |
-| Switch ChatGPT accounts behind a stable endpoint for Codex CLI | [codex-account-gateway](https://github.com/filip-pilar/codex-account-gateway) |
-| Choose Codex accounts and external models from one experimental Mac app | [codex-switchboard](https://github.com/filip-pilar/codex-switchboard) |
-| Expose Devin/Grok CLI access through local OpenAI- and Anthropic-compatible APIs | [llm-local-gateway](https://github.com/filip-pilar/llm-local-gateway) |
-| Assign different models to main agents and named subagents in Codex or Claude Code | [subagent-model-router](https://github.com/filip-pilar/subagent-model-router) |
-
-These are separate tools. Switchboard bundles its own gateway; it does not
-require the other apps. Subagent Model Router can use LLM Local Gateway as a
-destination.
-
 ## Operation
 
 ```sh
@@ -110,7 +95,7 @@ node src/cli.mjs stop --json
 | `stale` | Run `start` to recover or `stop` to remove stale runtime state |
 | `runtime_unavailable`, `unsafe_runtime`, `lifecycle_busy` | Follow [recovery instructions](docs/cli.md#conservative-recovery); do not signal unverified PIDs or delete backing credentials |
 
-Enable **Connection… → Run automatically** in the Mac app to launch at login and keep the gateway running while the app is open. CLI background mode alone has no restart supervisor. Shutdown cancels active requests. Authentication and renewal are owned by the official CLI; occasional sign-in is still required.
+Enable **Settings → Keep gateway running** in the Mac app to launch at login and keep the gateway running while the app is open. CLI background mode alone has no restart supervisor. Shutdown cancels active requests. Authentication and renewal are owned by the official CLI; occasional sign-in is still required.
 
 ## Boundary
 
@@ -131,6 +116,6 @@ swift test --package-path macos  # Native usage and automatic-run fixtures
 
 The CLI and account logic live in `src/`, SwiftUI in `macos/`, and fixtures in `test/`. Rebuild the app after backend changes because it bundles a copy of `src/`. Quit and reopen it to load a rebuilt executable.
 
-Local fixtures cover this package. Historical live tests used Codex CLI 0.149.1 and an experimental proxy: [compatibility](docs/compatibility.md), [sanitized evidence](docs/evidence.md). The usage adapter follows that CLI version’s generated protocol; authenticated usage retrieval remains unverified. Other CLI versions and desktop parity are unverified. This package has not repeated the live suite.
+Local fixtures cover the gateway and Mac app. The bounded desktop check and its limits are recorded in [verification](docs/verification.md). Changes in the official CLI or Desktop engine may affect compatibility.
 
 Development rules: [AGENTS.md](AGENTS.md). Checks are local; no CI. npm publication is disabled via `private: true`. Licensed under [MIT](LICENSE). No third-party implementation vendored. Not an official OpenAI product.

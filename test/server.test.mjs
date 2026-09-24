@@ -1,9 +1,36 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { gzipSync } from 'node:zlib';
+import net from 'node:net';
 import { startServer } from '../src/server.mjs';
 const auth=async()=>({token:'backing-fixture',account:'fixture-account'});
 const body={model:'fixture-model',stream:true,input:[],reasoning:{effort:'low'}};
+test('WebSocket negotiation requests immediate HTTP fallback without selecting an account', async () => {
+  let authCalls = 0, upstreamCalls = 0;
+  const s = await startServer({ port: 0, credentials: async () => { authCalls++; return auth(); },
+    transport: async () => { upstreamCalls++; return new Response('fixture'); } });
+  const handshake = (path = '/v1/responses', extra = '', host = `127.0.0.1:${s.port}`) => new Promise((resolve, reject) => {
+    const socket = net.connect(s.port, '127.0.0.1');
+    let reply = '';
+    socket.setTimeout(1000, () => socket.destroy(new Error('handshake did not close')));
+    socket.on('error', reject);
+    socket.on('data', chunk => { reply += chunk; });
+    socket.on('end', () => resolve(reply));
+    socket.on('connect', () => socket.write(`GET ${path} HTTP/1.1\r\nHost: ${host}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: Zml4dHVyZS1maXh0dXJlIQ==\r\n${extra}\r\n`));
+  });
+  try {
+    assert.match(await handshake(), /^HTTP\/1\.1 426 Upgrade Required\r\n/);
+    assert.match(await handshake('/v1/responses', 'Origin: https://example.test\r\n'), /^HTTP\/1\.1 403 /);
+    assert.match(await handshake('/v1/responses', '', `example.test:${s.port}`), /^HTTP\/1\.1 403 /);
+    assert.match(await handshake('/control/stop'), /^HTTP\/1\.1 404 /);
+    assert.equal(authCalls, 0);
+    assert.equal(upstreamCalls, 0);
+    const response = await fetch(`http://127.0.0.1:${s.port}/v1/responses`, { method: 'POST', body: JSON.stringify(body) });
+    assert.equal(await response.text(), 'fixture');
+    assert.equal(authCalls, 1);
+    assert.equal(upstreamCalls, 1);
+  } finally { await s.close(); }
+});
 test('client cancellation aborts upstream work',async()=>{
   let aborted;const done=new Promise(r=>aborted=r);
   const s=await startServer({port:0,credentials:auth,transport:async(u,o)=>{

@@ -5,7 +5,7 @@
 - Setup: follow [README.md#setup](README.md#setup); for the Mac app, use [docs/macos.md](docs/macos.md). Do not edit source to configure a profile.
 - CLI: use [docs/cli.md](docs/cli.md); parse JSON codes, not prose. Start diagnosis with `doctor --json` and `status --json`.
 - Treat review, audit, diagnosis, and planning requests as read-only unless implementation is requested.
-- Real inference requires explicit session authorization. Follow [docs/verification.md](docs/verification.md); do not retry or expand live checks automatically. Preserve historical evidence rather than rerunning the investigation.
+- Real inference requires explicit session authorization. Follow [docs/verification.md](docs/verification.md); do not retry or expand live checks automatically.
 
 ## Invariants
 

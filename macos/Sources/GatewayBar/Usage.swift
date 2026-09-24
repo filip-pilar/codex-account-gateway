@@ -22,6 +22,11 @@ struct UsageBucket: Decodable, Identifiable {
     let id: String
     let primary: UsageWindow?
     let secondary: UsageWindow?
+    var windows: [UsageWindow] {
+        [primary, secondary].compactMap { $0 }.sorted {
+            ($0.window_minutes == 10_080 ? 0 : 1) < ($1.window_minutes == 10_080 ? 0 : 1)
+        }
+    }
 }
 struct Usage: Decodable {
     let checked_at: String
@@ -34,7 +39,9 @@ struct Usage: Decodable {
         return [bucket?.primary, bucket?.secondary].compactMap { $0 }.first { $0.window_minutes == 10_080 }
     }
     var checkedText: String {
-        guard let date = ISO8601DateFormatter().date(from: checked_at) else { return "Last check unknown" }
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        guard let date = fractional.date(from: checked_at) ?? ISO8601DateFormatter().date(from: checked_at) else { return "Last check unknown" }
         return "Checked \(date.formatted(date: .omitted, time: .shortened))"
     }
 }

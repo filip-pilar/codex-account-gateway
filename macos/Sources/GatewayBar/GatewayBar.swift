@@ -20,266 +20,450 @@ import AppKit
     }
 }
 
+private enum GatewayPage: Hashable {
+    case accounts, account(String), settings, add, rename(String), clientSetup, confirmStop
+    var title: String {
+        switch self {
+        case .accounts: "Gateway"
+        case .account: "Account"
+        case .settings: "Settings"
+        case .add: "Add Account"
+        case .rename: "Rename Account"
+        case .clientSetup: "Set Up Codex CLI"
+        case .confirmStop: "Stop Gateway"
+        }
+    }
+    var parent: GatewayPage {
+        switch self {
+        case .rename(let id): .account(id)
+        case .clientSetup, .confirmStop: .settings
+        default: .accounts
+        }
+    }
+}
+
 struct GatewayView: View {
     @ObservedObject var model: GatewayModel
-    @State private var confirmStop = false
-    @State private var contentHeight: CGFloat = 180
-    @State private var connectionExpanded = false
-    @State private var usageExpanded = false
-    private var selected: Account? { model.accounts.first(where: \.selected) }
-    private var bodyHeight: CGFloat {
-        let available = (NSScreen.main?.visibleFrame.height ?? 800) - 130
-        return min(contentHeight, max(180, min(520, available)))
+    @State private var page: GatewayPage = .accounts
+    @State private var draft = ""
+    @State private var hoveredAccount: String?
+    @State private var copied = false
+    @FocusState private var fieldFocused: Bool
+    private var status: GatewayStatus {
+        GatewayStatus(state: model.state, routing: model.routing)
     }
+    private var panelHeight: CGFloat {
+        let height: CGFloat
+        switch page {
+        case .accounts: height = 166 + CGFloat(max(1, model.accounts.count)) * 58 + (status.notice == nil ? 0 : 70)
+        case .settings: height = model.connectionNeedsUpdate ? 450 : 420
+        case .account: height = 460
+        case .rename: height = 190
+        case .clientSetup: height = model.running ? 190 : 220
+        case .add, .confirmStop: height = 220
+        }
+        let notices: CGFloat = (model.message == nil ? 0 : 70) + (model.loginPending ? 60 : 0)
+        return min(height + notices, (NSScreen.main?.visibleFrame.height ?? 800) - 80)
+    }
+    private var validName: Bool {
+        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !text.isEmpty && text.count <= 60 && text.unicodeScalars.allSatisfy { !CharacterSet.controlCharacters.contains($0) }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             header
             Divider()
             ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
-                    if let notice = model.routing?.notice {
-                        Label(notice, systemImage: "exclamationmark.circle")
-                            .font(.caption).foregroundStyle(.orange)
-                            .fixedSize(horizontal: false, vertical: true).padding(.horizontal, 14)
-                    }
-                    if let message = model.message {
-                        HStack(alignment: .top, spacing: 8) {
-                            Image(systemName: model.isError ? "exclamationmark.circle" : "info.circle")
-                            Text(message).fixedSize(horizontal: false, vertical: true)
-                            Spacer(minLength: 0)
-                            Button { model.message = nil } label: { Image(systemName: "xmark").font(.caption2) }
-                                .buttonStyle(.plain).accessibilityLabel("Dismiss message")
-                        }
-                        .font(.caption).foregroundStyle(model.isError ? Color.orange : Color.secondary)
-                        .padding(.horizontal, 14)
-                    }
+                VStack(alignment: .leading, spacing: 16) {
+                    if let message = model.message { notice(message) }
                     if model.loginPending {
-                        Button("Check sign-in", systemImage: "arrow.clockwise") { Task { await model.checkLogin() } }
-                            .disabled(model.busy).padding(.horizontal, 14)
+                        HStack(alignment: .top, spacing: 12) {
+                            Text("Complete sign-in in Terminal.")
+                                .font(.callout).foregroundStyle(.secondary)
+                            Spacer(minLength: 0)
+                            Button("Check Sign-in") { Task { await model.checkLogin() } }
+                                .disabled(model.busy || model.checkingUsage)
+                        }.card()
                     }
-                    if model.accounts.count == 1 && !model.accounts[0].authenticated {
-                        VStack(alignment: .leading, spacing: 5) {
-                            Text("Stay signed into one account.").font(.system(size: 14, weight: .semibold))
-                            Text("Use usage from multiple ChatGPT accounts.")
-                                .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                        }.padding(.horizontal, 14)
-                    }
-                    if model.adding { addForm.padding(.horizontal, 14) }
-                    VStack(spacing: 2) {
-                        if model.accounts.contains(where: \.authenticated) {
-                            HStack {
-                                Text("Account")
-                                Spacer()
-                                Text("Weekly left")
-                            }.font(.caption).foregroundStyle(.secondary).padding(.leading, 37).padding(.trailing, 16).padding(.bottom, 3)
-                        }
-                        ForEach(model.accounts) { account in accountRow(account) }
-                    }
-                    if model.accounts.contains(where: \.authenticated) {
-                        usageDetails.padding(.horizontal, 14)
-                    }
-                    if connectionExpanded { connection.padding(.horizontal, 14) }
+                    content
                 }
-                .padding(.vertical, 12)
+                .padding(16)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .fixedSize(horizontal: false, vertical: true)
-                .background(GeometryReader { geometry in
-                    Color.clear.preference(key: ContentHeightKey.self, value: geometry.size.height)
-                })
             }
-            .frame(height: bodyHeight)
-            .onPreferenceChange(ContentHeightKey.self) { height in
-                if height > 0 { contentHeight = ceil(height) }
-            }
+            .scrollBounceBehavior(.basedOnSize)
+            .defaultScrollAnchor(.top)
+            .id(page)
             Divider()
             footer
         }
-        .frame(width: 340)
-        .fixedSize(horizontal: false, vertical: true)
+        .frame(width: 380, height: panelHeight)
         .background(.regularMaterial)
         .task {
-            if !ProcessInfo.processInfo.arguments.contains("--demo") { UserDefaults.standard.set(true, forKey: "didShowWelcome") }
+            if !model.isDemo { UserDefaults.standard.set(true, forKey: "didShowWelcome") }
             await model.refresh()
         }
-        .confirmationDialog("Stop the gateway?", isPresented: $confirmStop) {
-            Button("Stop gateway", role: .destructive) { Task { await model.action(["stop"], success: "Gateway stopped.") } }
-        } message: { Text("Active requests will be cancelled. Your accounts stay signed in.") }
-    }
-    private var header: some View {
-        HStack(spacing: 8) {
-            AccountGlyph().fill(.secondary).frame(width: 20, height: 19).accessibilityHidden(true)
-            Text("Gateway").font(.system(size: 13, weight: .semibold))
-            Spacer()
-            if model.busy { ProgressView().controlSize(.mini).accessibilityLabel("Updating gateway") }
-            if !model.running && model.selectedReady {
-                Button("Start") { Task { await model.action(["start", "--background"], success: "Gateway running.") } }
-                    .controlSize(.small).disabled(model.busy).accessibilityLabel("Start gateway")
-            } else {
-                HStack(spacing: 5) {
-                    Circle().fill(model.running ? Color.green : Color.secondary.opacity(0.5)).frame(width: 5, height: 5)
-                    Text(model.running ? (model.routing?.notice == nil ? "Automatic" : "Paused") : model.state.replacingOccurrences(of: "_", with: " ").capitalized)
-                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                }
+        .task(id: page) {
+            fieldFocused = false
+            if page == .add || page == .clientSetup || isRenaming {
+                fieldFocused = true
             }
-        }.padding(.horizontal, 14).padding(.vertical, 12)
-    }
-    @ViewBuilder private func accountRow(_ account: Account) -> some View {
-        if account.authenticated {
-            Button {
-                guard !account.selected else { return }
-                Task { await model.action(["account-select", "--account", account.id], success: "Selected \(account.label). Automatic routing keeps a 5% weekly reserve.") }
-            } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: "checkmark").font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(Color.accentColor).opacity(account.selected ? 1 : 0).frame(width: 14)
-                    Text(account.label).lineLimit(1).truncationMode(.middle)
-                    Spacer(minLength: 8)
-                    if model.usageErrors[account.id] != nil {
-                        Image(systemName: "exclamationmark.circle").font(.caption).foregroundStyle(.orange)
-                            .help("Usage may be out of date. Open Usage details.")
-                    }
-                    if let weekly = model.usages[account.id]?.weeklyWindow {
-                        Text("\(Int(weekly.remaining_percent.rounded()))%")
-                            .monospacedDigit().foregroundStyle(weekly.remaining_percent <= 10 ? Color.orange : Color.primary)
-                    } else {
-                        Text("—").foregroundStyle(.secondary).help("Weekly usage has not been reported.")
-                    }
-                }
-                .font(.system(size: 13))
-                .padding(.horizontal, 10).padding(.vertical, 9)
-                .contentShape(Rectangle())
-                .background(account.selected ? Color.accentColor.opacity(0.1) : .clear, in: RoundedRectangle(cornerRadius: 5))
-            }
-            .buttonStyle(.plain).disabled(model.busy).padding(.horizontal, 6)
-            .accessibilityLabel("\(account.label), \(account.selected ? "selected, " : "")weekly remaining \(weeklyDescription(account))")
-            .accessibilityHint("Select this account for future requests")
-        } else {
-            HStack {
-                Image(systemName: "person.crop.circle").foregroundStyle(.secondary).frame(width: 14)
-                Text(account.label).lineLimit(1)
-                Spacer()
-                Button("Sign in") { model.login(account) }.buttonStyle(.borderedProminent).controlSize(.small).disabled(model.busy)
-            }.font(.system(size: 13)).padding(.horizontal, 16).padding(.vertical, 6)
         }
     }
-    private func weeklyDescription(_ account: Account) -> String {
-        guard let window = model.usages[account.id]?.weeklyWindow else { return "unavailable" }
-        let stale = model.usageErrors[account.id] == nil ? "" : ", out of date"
-        return "\(Int(window.remaining_percent.rounded())) percent\(stale)"
+
+    private var isRenaming: Bool { if case .rename = page { true } else { false } }
+    private var header: some View {
+        HStack(spacing: 10) {
+            if page == .accounts {
+                Image(nsImage: StackGlyph.menuImage)
+                    .resizable().scaledToFit().frame(width: 21, height: 21)
+                    .foregroundStyle(.secondary).accessibilityHidden(true)
+            } else {
+                Button { page = page.parent } label: {
+                    Image(systemName: "chevron.left").font(.body.weight(.semibold)).frame(width: 24, height: 26)
+                }
+                .buttonStyle(.borderless).help("Back")
+                .accessibilityLabel("Back")
+                .keyboardShortcut(.cancelAction)
+            }
+            Text(page.title).font(.headline)
+            if model.isDemo && page != .accounts {
+                Text("PREVIEW").font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
+                    .padding(.horizontal, 5).padding(.vertical, 3)
+                    .background(.quaternary, in: Capsule())
+            }
+            Spacer(minLength: 4)
+            if page == .accounts {
+                HStack(spacing: 5) {
+                    Circle().fill(status.tone.color).frame(width: 6, height: 6).accessibilityHidden(true)
+                    Text(status.title).font(.caption).foregroundStyle(.secondary)
+                }.accessibilityElement(children: .combine)
+            }
+            if model.busy { ProgressView().controlSize(.small).accessibilityLabel("Updating gateway") }
+            if page == .accounts || isAccountPage {
+                Button { Task { await model.refresh(includeUsage: true) } } label: {
+                    if model.checkingUsage {
+                        ProgressView().controlSize(.mini).frame(width: 26, height: 26)
+                    } else { Image(systemName: "arrow.clockwise").frame(width: 26, height: 26) }
+                }
+                .buttonStyle(.borderless).disabled(model.checkingUsage || model.busy)
+                .help("Refresh usage").accessibilityLabel("Refresh usage")
+            }
+            if page == .accounts {
+                Button { page = .settings } label: {
+                    Image(systemName: "gearshape").frame(width: 26, height: 26)
+                }.buttonStyle(.borderless).help("Settings").accessibilityLabel("Settings")
+            }
+        }
+        .padding(.horizontal, 16).frame(height: 54)
     }
-    private var usageDetails: some View {
-        DisclosureGroup("Usage details", isExpanded: $usageExpanded) {
-            VStack(alignment: .leading, spacing: 10) {
+    private var isAccountPage: Bool { if case .account = page { true } else { false } }
+
+    @ViewBuilder private var content: some View {
+        switch page {
+        case .accounts: overview
+        case .settings: settings
+        case .account(let id):
+            if let account = model.accounts.first(where: { $0.id == id }) { accountDetails(account) }
+        case .add:
+            entryForm(field: "Account name", hint: "Sign-in opens in Terminal.")
+        case .rename:
+            entryForm(field: "Account name")
+        case .clientSetup:
+            entryForm(field: "Model ID")
+            if !model.running { Text("Start the gateway first.").font(.callout).foregroundStyle(.secondary) }
+        case .confirmStop:
+            Text("Active requests will be cancelled. Automatic restarts stay paused until you start the gateway again.")
+                .font(.callout).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var overview: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            if let warning = status.notice {
+                Label(warning, systemImage: "exclamationmark.circle.fill")
+                    .font(.callout).foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true).card()
+            }
+            VStack(spacing: 6) {
                 HStack {
-                    Text(selected?.label ?? "Selected account").fontWeight(.medium)
+                    Text("ACCOUNTS")
                     Spacer()
-                    Button("Refresh", systemImage: "arrow.clockwise") { Task { await model.refresh(includeUsage: true) } }
-                        .disabled(model.checkingUsage).controlSize(.small)
+                    Text("WEEKLY LEFT")
+                }.font(.system(size: 10, weight: .medium)).foregroundStyle(.secondary)
+                    .padding(.horizontal, 4)
+                if model.accounts.isEmpty {
+                    Text(model.state == "Checking" ? "Loading accounts…" : "No accounts")
+                        .font(.callout).foregroundStyle(.secondary).frame(maxWidth: .infinity, minHeight: 60)
                 }
-                if let account = selected {
-                    if let error = model.usageErrors[account.id] {
-                        Text(error).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                VStack(spacing: 1) {
+                    ForEach(model.accounts) { account in accountRow(account) }
+                }
+            }
+        }
+    }
+
+    private func accountRow(_ account: Account) -> some View {
+        let weekly = model.usages[account.id]?.weeklyWindow
+        let state = AccountStatus(account: account, weekly: weekly, usageError: model.usageErrors[account.id] != nil)
+        return Button { page = .account(account.id) } label: {
+            HStack(spacing: 10) {
+                Image(systemName: account.selected ? "checkmark.circle.fill" : "person.crop.circle")
+                    .font(.system(size: 25, weight: .light))
+                    .foregroundStyle(account.selected ? Color.accentColor : .secondary)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(account.label).font(.body.weight(account.selected ? .semibold : .regular))
+                        .lineLimit(1).truncationMode(.middle)
+                    if let note = state.rowNote {
+                        Text(note).font(.caption).foregroundStyle(state.tone.color)
                     }
-                    if let usage = model.usages[account.id] {
-                        ForEach(usage.buckets) { bucket in
-                            VStack(alignment: .leading, spacing: 8) {
-                                if usage.buckets.count > 1 { Text(bucket.id).fontWeight(.medium) }
-                                if let primary = bucket.primary { usageWindow(primary) }
-                                if let secondary = bucket.secondary { usageWindow(secondary) }
-                            }
-                        }
-                        if usage.weeklyWindow == nil { Text("Weekly usage not reported.").foregroundStyle(.secondary) }
-                        Text(usage.checkedText + (model.usageErrors[account.id] == nil ? "" : " · out of date")).foregroundStyle(.secondary)
-                    } else { Text("Usage not available yet.").foregroundStyle(.secondary) }
-                    Button("Sign in again…") { model.login(account) }.disabled(model.busy)
                 }
-                Text("Automatically switches accounts at 5% weekly remaining. Requests already running finish on their original account.")
-                    .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            }.font(.caption).padding(.top, 8)
-        }.font(.caption).foregroundStyle(.secondary)
+                Spacer(minLength: 4)
+                if account.authenticated {
+                    VStack(alignment: .trailing, spacing: 5) {
+                        Text(weekly.map { "\(Int($0.remaining_percent.rounded()))%" } ?? "—")
+                            .font(.body.weight(.medium)).monospacedDigit()
+                            .foregroundStyle(weekly.map { $0.remaining_percent <= 5 } == true ? Color.orange : .primary)
+                        if let weekly {
+                            ProgressView(value: min(100, max(0, weekly.remaining_percent)), total: 100)
+                                .tint(weekly.remaining_percent <= 5 ? .orange : .accentColor)
+                                .frame(width: 48).controlSize(.mini).accessibilityHidden(true)
+                        }
+                    }
+                }
+                Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.tertiary).padding(.leading, 2).accessibilityHidden(true)
+            }
+            .padding(.horizontal, 10).frame(minHeight: 58)
+            .contentShape(RoundedRectangle(cornerRadius: 9))
+            .background(account.selected ? Color.accentColor.opacity(0.08) : hoveredAccount == account.id ? Color.primary.opacity(0.04) : .clear, in: RoundedRectangle(cornerRadius: 9))
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering in hoveredAccount = hovering ? account.id : nil }
+        .help("View \(account.label)")
+        .accessibilityLabel("\(account.label), \(state.title), weekly remaining \(weekly.map { "\(Int($0.remaining_percent.rounded())) percent" } ?? "unavailable")")
+        .accessibilityHint("View account details")
+    }
+
+    private func accountDetails(_ account: Account) -> some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 12) {
+                Image(systemName: "person.crop.circle.fill").font(.system(size: 36, weight: .light))
+                    .foregroundStyle(Color.accentColor).accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(account.label).font(.headline).textSelection(.enabled)
+                    if !account.authenticated {
+                        Text("Not signed in").font(.callout).foregroundStyle(.secondary)
+                    }
+                }
+            }.padding(.vertical, 4)
+            if let error = model.usageErrors[account.id] {
+                Label(error, systemImage: "exclamationmark.circle")
+                    .font(.callout).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+            }
+            if let usage = model.usages[account.id] {
+                ForEach(usage.buckets) { bucket in
+                    VStack(alignment: .leading, spacing: 14) {
+                        if usage.buckets.count > 1 { Text(bucket.id).font(.headline) }
+                        ForEach(Array(bucket.windows.enumerated()), id: \.offset) { index, window in
+                            if index > 0 { Divider() }
+                            usageWindow(window)
+                        }
+                    }.card()
+                }
+                Text(usage.checkedText + (model.usageErrors[account.id] == nil ? "" : " · Out of date")).font(.caption).foregroundStyle(.secondary)
+            } else if account.authenticated {
+                Text(model.checkingUsage ? "Checking usage…" : "Usage unavailable.")
+                    .font(.callout).foregroundStyle(.secondary).card()
+            }
+            HStack {
+                Button("Rename…") { draft = account.label; page = .rename(account.id) }
+                Spacer()
+                if account.authenticated { Button("Sign In Again…") { model.login(account) } }
+            }.disabled(model.busy)
+        }
     }
     private func usageWindow(_ window: UsageWindow) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack {
-                Text(window.title)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(window.title).font(.body.weight(.medium))
                 Spacer()
-                Text("\(Int(window.remaining_percent.rounded()))% left").monospacedDigit()
-            }.foregroundStyle(.primary)
-            if let reset = window.resetText { Text(reset).foregroundStyle(.secondary) }
+                Text("\(Int(window.remaining_percent.rounded()))%").font(.title3.weight(.semibold)).monospacedDigit()
+                Text("left").font(.caption).foregroundStyle(.secondary)
+            }
+            ProgressView(value: min(100, max(0, window.remaining_percent)), total: 100)
+                .tint(window.remaining_percent <= 5 ? .orange : .accentColor)
+                .accessibilityLabel("\(window.title) remaining")
+                .accessibilityValue("\(Int(window.remaining_percent.rounded())) percent")
+            if let reset = window.resetText { Text(reset).font(.caption).foregroundStyle(.secondary) }
         }
     }
-    private var addForm: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            TextField("Account name", text: $model.label).textFieldStyle(.roundedBorder)
-                .onSubmit { if !model.label.trimmingCharacters(in: .whitespaces).isEmpty { Task { await model.add() } } }
-            Text("Each account signs in separately through the official Codex CLI.")
-                .font(.caption).foregroundStyle(.secondary)
-            HStack {
-                Button("Cancel") { model.adding = false }
-                Spacer()
-                Button("Add & sign in") { Task { await model.add() } }
-                    .buttonStyle(.borderedProminent).disabled(model.busy || model.label.trimmingCharacters(in: .whitespaces).isEmpty)
-            }
-        }.padding(12).background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 12))
-    }
-    private var connection: some View {
-        DisclosureGroup(isExpanded: $connectionExpanded) {
-            VStack(alignment: .leading, spacing: 12) {
-                Toggle("Run automatically", isOn: Binding(get: { model.runAutomatically }, set: { enabled in
+
+    private var settings: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 14) {
+                Toggle(isOn: Binding(get: { model.runAutomatically }, set: { enabled in
                     Task { await model.setAutomaticRun(enabled) }
-                })).disabled(model.busy)
-                Text("Launches at login and keeps the gateway running. Stop gateway pauses automatic restarts until you click Start.")
-                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                })) {
+                    Text("Keep gateway running").frame(maxWidth: .infinity, alignment: .leading)
+                }.toggleStyle(.switch).controlSize(.small).disabled(model.busy)
+                    .accessibilityLabel("Keep gateway running")
+                    .accessibilityHint("Launch at login and restart if interrupted")
+                    .help("Launch at login and restart if interrupted")
                 if model.startupNeedsApproval {
-                    Button("Allow startup in System Settings…") { model.openLoginSettings() }
+                    Button("Allow in Login Items…") { model.openLoginSettings() }
+                }
+                Divider()
+                Toggle(isOn: Binding(get: { model.globalEnabled }, set: { enabled in
+                    Task { await model.setGlobalProvider(enabled) }
+                })) {
+                    Text("Use gateway in Codex").frame(maxWidth: .infinity, alignment: .leading)
+                }.toggleStyle(.switch).controlSize(.small)
+                    .disabled(model.busy || (!model.globalEnabled && !model.running))
+                    .accessibilityLabel("Use gateway in Codex")
+                    .accessibilityHint("Route new and existing OpenAI tasks through Gateway")
+                    .help("New and existing OpenAI tasks. Restart Codex to apply changes.")
+                if model.connectionNeedsUpdate {
+                    Button("Update Connection") { Task { await model.setGlobalProvider(true) } }
+                        .disabled(model.busy || !model.running)
+                        .help("Apply the connection setting to new and existing OpenAI tasks")
+                }
+            }.card()
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Text("Connection").font(.body.weight(.semibold))
+                    Spacer()
+                    Label(model.running ? "Running" : "Stopped", systemImage: model.running ? "checkmark.circle.fill" : "stop.circle")
+                        .font(.caption).foregroundStyle(model.running ? Color.green : .secondary)
                 }
                 HStack {
                     Text(model.endpoint).font(.system(.caption, design: .monospaced))
                         .foregroundStyle(.secondary).textSelection(.enabled)
-                    Spacer(minLength: 4)
-                    Button { model.copyEndpoint() } label: { Image(systemName: "doc.on.doc") }
-                        .buttonStyle(.plain).foregroundStyle(.secondary)
-                        .help("Copy gateway address").accessibilityLabel("Copy gateway address")
+                    Spacer(minLength: 0)
+                    Button {
+                        model.copyEndpoint(); copied = true
+                    } label: { Image(systemName: copied ? "checkmark" : "doc.on.doc") }
+                        .buttonStyle(.borderless).help(copied ? "Copied" : "Copy address")
+                        .accessibilityLabel(copied ? "Address copied" : "Copy gateway address")
                 }
-                Button("Set up Codex CLI…", systemImage: "terminal") { model.connecting.toggle(); model.adding = false }
+                Divider()
+                Button { draft = ""; page = .clientSetup } label: {
+                    HStack {
+                        Label("Set Up Codex CLI…", systemImage: "terminal")
+                        Spacer()
+                        Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.tertiary)
+                    }.contentShape(Rectangle())
+                }.buttonStyle(.plain).disabled(model.busy)
+            }.card()
+            if model.running {
+                Button("Stop Gateway…", role: .destructive) { page = .confirmStop }
                     .disabled(model.busy)
-                if model.connecting {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("Enter a model your account supports. A new client profile will open in Terminal.")
-                            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                        TextField("Model ID", text: $model.modelID).textFieldStyle(.roundedBorder)
-                        Button("Create profile & open") { Task { await model.createClient() } }
-                            .disabled(model.busy || model.modelID.trimmingCharacters(in: .whitespaces).isEmpty || !model.running)
-                        if !model.running { Text("Start the gateway first.").font(.caption).foregroundStyle(.secondary) }
-                    }
-                }
-                if model.running {
-                    Button("Stop gateway", role: .destructive) { confirmStop = true }.disabled(model.busy)
-                } else if model.selectedReady {
-                    Button("Start gateway") { Task { await model.action(["start", "--background"], success: "Gateway running.") } }.disabled(model.busy)
-                }
-                Text("Codex desktop connection is not yet verified.")
-                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            }.padding(.top, 10)
-        } label: {
-            Label("Connection", systemImage: "network")
-                .font(.callout).foregroundStyle(.secondary)
+            } else {
+                Button("Start Gateway") { Task { await model.action(["start", "--background"]) } }
+                    .disabled(model.busy || !model.selectedReady)
+            }
         }
     }
+    private func entryForm(field: String, hint: String? = nil) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(field).font(.callout.weight(.medium))
+            TextField("", text: $draft).textFieldStyle(.roundedBorder)
+                .accessibilityLabel(field).focused($fieldFocused).onSubmit { submit() }
+            if let hint { Text(hint).font(.caption).foregroundStyle(.secondary) }
+        }
+    }
+    private func notice(_ message: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: model.isError ? "exclamationmark.circle.fill" : "checkmark.circle")
+                .foregroundStyle(model.isError ? Color.orange : .secondary)
+            Text(message).font(.callout).fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+            Button { model.message = nil } label: { Image(systemName: "xmark").font(.caption2).frame(width: 18, height: 18) }
+                .buttonStyle(.borderless).accessibilityLabel("Dismiss message")
+        }.card()
+    }
+
     private var footer: some View {
         HStack {
-            Button("Add account…") { model.adding.toggle(); model.connecting = false }.disabled(model.busy)
-            Spacer()
-            Button("Connection…") { connectionExpanded.toggle() }
-            Spacer()
-            Button("Quit") { NSApp.terminate(nil) }.help("Quit menu-bar app; the gateway keeps running")
-        }.buttonStyle(.plain).font(.caption).foregroundStyle(.secondary).padding(.horizontal, 14).padding(.vertical, 11)
+            switch page {
+            case .accounts:
+                Button { draft = ""; page = .add } label: { Label("Add Account…", systemImage: "plus") }
+                    .disabled(model.busy)
+                Spacer()
+                if model.isDemo { Text("PREVIEW").font(.caption2).foregroundStyle(.tertiary) }
+                if !model.running && model.selectedReady {
+                    Button("Start") { Task { await model.action(["start", "--background"]) } }
+                        .buttonStyle(.borderedProminent).disabled(model.busy)
+                }
+            case .settings:
+                Spacer()
+                Button("Quit") { NSApp.terminate(nil) }
+                    .help("Quits the menu app. The gateway stays running; automatic monitoring stops.")
+            case .account(let id):
+                if let account = model.accounts.first(where: { $0.id == id }) {
+                    let state = AccountStatus(account: account, weekly: model.usages[id]?.weeklyWindow, usageError: model.usageErrors[id] != nil)
+                    if account.selected && account.authenticated {
+                        Label("Selected account", systemImage: "checkmark.circle.fill").foregroundStyle(.secondary)
+                        Spacer()
+                    } else {
+                        if account.authenticated && !state.canSelect {
+                            Text(state.title).font(.caption).foregroundStyle(state.tone.color)
+                        }
+                        Spacer()
+                        if account.authenticated {
+                            Button("Use This Account") { Task { await model.action(["account-select", "--account", id]) } }
+                                .buttonStyle(.borderedProminent).disabled(model.busy || !state.canSelect)
+                                .help(state.canSelect ? "Use this account for future requests" : "Fresh weekly usage above 5% is required")
+                        } else {
+                            Button("Sign In…") { model.login(account) }
+                                .buttonStyle(.borderedProminent).disabled(model.busy)
+                        }
+                    }
+                }
+            case .add, .rename, .clientSetup:
+                Button("Cancel") { page = page.parent }
+                Spacer()
+                Button(page == .add ? "Add & Sign In…" : page == .clientSetup ? "Choose Folder…" : "Save") { submit() }
+                    .buttonStyle(.borderedProminent).disabled(!canSubmit)
+                    .keyboardShortcut(.defaultAction)
+            case .confirmStop:
+                Button("Keep Running") { page = .settings }.keyboardShortcut(.defaultAction)
+                Spacer()
+                Button("Stop Gateway", role: .destructive) {
+                    Task { await model.action(["stop"]); page = .settings }
+                }.buttonStyle(.borderedProminent).tint(.red).disabled(model.busy)
+            }
+        }.controlSize(.regular).padding(.horizontal, 16).frame(height: 52)
+    }
+    private var canSubmit: Bool {
+        !model.busy && (page == .clientSetup ? !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && model.running : validName)
+    }
+    private func submit() {
+        guard canSubmit else { return }
+        Task {
+            switch page {
+            case .add: if await model.add(label: draft) { page = .accounts }
+            case .rename(let id):
+                if let account = model.accounts.first(where: { $0.id == id }), await model.rename(account, to: draft) { page = .account(id) }
+            case .clientSetup: if await model.createClient(modelID: draft) { page = .settings }
+            default: break
+            }
+        }
     }
 }
 
-private struct ContentHeightKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = max(value, nextValue())
+private extension StatusTone {
+    var color: Color {
+        switch self { case .positive: .green; case .caution: .orange; case .neutral: .secondary }
+    }
+}
+private extension View {
+    func card() -> some View {
+        padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color(nsColor: .controlBackgroundColor).opacity(0.6), in: RoundedRectangle(cornerRadius: 12))
+            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color.primary.opacity(0.04)))
     }
 }

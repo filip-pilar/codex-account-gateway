@@ -2,6 +2,11 @@ import XCTest
 @testable import GatewayBar
 
 final class UsageTests: XCTestCase {
+    func testCheckTimeAcceptsBackendFractionalSeconds() {
+        for timestamp in ["2026-09-24T10:30:00.123Z", "2026-09-24T10:30:00Z"] {
+            XCTAssertNotEqual(Usage(checked_at: timestamp, buckets: []).checkedText, "Last check unknown")
+        }
+    }
     private func window(_ minutes: Double?) -> UsageWindow {
         UsageWindow(remaining_percent: 72, window_minutes: minutes, resets_at: nil)
     }

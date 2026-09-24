@@ -8,9 +8,10 @@ import net from 'node:net';
 import http from 'node:http';
 import { stateRoot, ensureState, writePrivate, readPrivate, noSymlinkParents } from './state.mjs';
 import { startServer } from './server.mjs';
-import { selectedAccount, getAccount, listAccounts, addAccount, selectAccount } from './accounts.mjs';
+import { selectedAccount, getAccount, listAccounts, addAccount, renameAccount, selectAccount } from './accounts.mjs';
 import { readUsage } from './usage.mjs';
 import { createRouter } from './routing.mjs';
+import { gatewayProvider, readGlobalConfig, setGlobalConfig } from './global-config.mjs';
 
 const [command = 'help', ...args] = process.argv.slice(2);
 const json = args.includes('--json');
@@ -25,7 +26,9 @@ function output(value) {
 function options() {
   const allowed = {
     help: [], '--help': [], '-h': [], login: ['--account'],
-    accounts: [], 'account-add': ['--label'], 'account-select': ['--account'], usage: ['--account'],
+    accounts: [], 'account-add': ['--label'], 'account-rename': ['--account', '--label'], 'account-select': ['--account'], usage: ['--account'],
+    'global-status': [], 'global-enable': ['--port'], 'global-disable': [],
+    'openai-route-status': [], 'openai-route-enable': ['--port'], 'openai-route-disable': [],
     start: ['--port', '--background'], stop: [], status: [], doctor: ['--port'],
     setup: ['--port', '--model', '--client-dir'],
   }[command];
@@ -151,18 +154,7 @@ model_provider = "codex-gateway"
 model_reasoning_effort = "low"
 check_for_update_on_startup = false
 
-[model_providers.codex-gateway]
-name = "OpenAI"
-base_url = "http://127.0.0.1:${port}/v1"
-wire_api = "responses"
-requires_openai_auth = false
-supports_websockets = false
-supports_standalone_web_search = true
-http_headers = { "x-openai-actor-authorization" = "codex-gateway" }
-request_max_retries = 0
-stream_max_retries = 0
-stream_idle_timeout_ms = 240000
-`;
+${gatewayProvider(port)}`;
 }
 const inside = (a, b) => { const r = relative(a, b); return r === '' || (r !== '..' && !r.startsWith(`..${sep}`) && !isAbsolute(r)); };
 async function setup(opts, port) {
@@ -234,7 +226,14 @@ async function main() {
 login [--account ID]                       Interactive official CLI login
 accounts                                   List isolated account profiles
 account-add --label NAME                    Add an unsigned-in account
+account-rename --account ID --label NAME    Rename an account
 account-select --account ID                 Select account when gateway is idle
+openai-route-status                         Alias for global-status
+openai-route-enable [--port NUMBER]         Alias for global-enable
+openai-route-disable                        Alias for global-disable
+global-status                               Inspect the Codex gateway connection
+global-enable [--port NUMBER]              Connect new and existing OpenAI tasks
+global-disable                              Restore both Codex connection settings
 usage [--account ID]                        Read reported limits via official CLI
 start [--port NUMBER] [--background]        Start or report existing instance
 status                                     Verify selected instance
@@ -242,10 +241,20 @@ stop                                       Stop selected instance (idempotent)
 doctor [--port NUMBER]                      Local checks only
 setup --model MODEL [--port NUMBER] [--client-dir NEW_ABSOLUTE_DIRECTORY]
 All commands except login accept --json. See docs/cli.md.
-CODEX_GATEWAY_HOME selects private state. No global configuration edits.` });
+CODEX_GATEWAY_HOME selects private state. The global and openai-route commands explicitly edit user-level Codex config.` });
   if (command === 'setup') return setup(opts, port);
+  if (command === 'openai-route-status') return output({ ok: true, code: 'openai_route_status', route: await readGlobalConfig() });
+  if (command === 'openai-route-enable') return output({ ok: true, code: 'openai_route_enabled', route: await setGlobalConfig(true, port) });
+  if (command === 'openai-route-disable') return output({ ok: true, code: 'openai_route_disabled', route: await setGlobalConfig(false) });
+  if (command === 'global-status') return output({ ok: true, code: 'global_status', global: await readGlobalConfig() });
+  if (command === 'global-enable') return output({ ok: true, code: 'global_enabled', global: await setGlobalConfig(true, port) });
+  if (command === 'global-disable') return output({ ok: true, code: 'global_disabled', global: await setGlobalConfig(false) });
   if (command === 'accounts') return output({ ok: true, code: 'accounts', accounts: await listAccounts(root) });
   if (command === 'account-add') return output({ ok: true, code: 'account_added', account: await addAccount(root, opts['--label']) });
+  if (command === 'account-rename') {
+    if (!opts['--account'] || !opts['--label']) throw error('invalid_arguments', 'account-rename requires --account and --label.');
+    return output({ ok: true, code: 'account_renamed', account: await renameAccount(root, opts['--account'], opts['--label']) });
+  }
   if (command === 'usage') {
     const account = opts['--account'] ? await getAccount(root, opts['--account']) : await selectedAccount(root);
     return output({ ok: true, code: 'usage', account: account.id, ...await readUsage(account.path) });

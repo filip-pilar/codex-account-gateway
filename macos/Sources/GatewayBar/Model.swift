@@ -19,8 +19,10 @@ struct Reply: Decodable {
     let client_dir: String?
     let url: String?
     let routing: Routing?
+    let global: GlobalProvider?
     struct AddedAccount: Decodable { let id: String }
-    enum CodingKeys: String, CodingKey { case ok, code, accounts, account, config, launch_command, client_dir, url, routing }
+    struct GlobalProvider: Decodable { let enabled: Bool; let port: Int?; let needs_update: Bool? }
+    enum CodingKeys: String, CodingKey { case ok, code, accounts, account, config, launch_command, client_dir, url, routing, global }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         ok = try c.decode(Bool.self, forKey: .ok)
@@ -32,6 +34,7 @@ struct Reply: Decodable {
         client_dir = try c.decodeIfPresent(String.self, forKey: .client_dir)
         url = try c.decodeIfPresent(String.self, forKey: .url)
         routing = try c.decodeIfPresent(Routing.self, forKey: .routing)
+        global = try c.decodeIfPresent(GlobalProvider.self, forKey: .global)
     }
 }
 struct GatewayFailure: Error { let code: String }
@@ -103,31 +106,30 @@ func shellQuote(_ value: String) -> String { "'" + value.replacingOccurrences(of
     @Published var endpoint = "http://127.0.0.1:8787/v1"
     @Published var busy = false
     @Published var checkingUsage = false
+    @Published var refreshingAccount: String?
     @Published var runAutomatically: Bool
     @Published var routing: Routing?
+    @Published var globalEnabled = false
+    @Published var connectionNeedsUpdate = false
     @Published var startupNeedsApproval = false
     @Published var message: String?
     @Published var isError = false
-    @Published var adding = false
-    @Published var connecting = false
-    @Published var label = ""
-    @Published var modelID = ""
     @Published var loginPending = false
     private let backend = Backend()
     private var automatic: AutomaticRun
     private var monitoring: Task<Void, Never>?
     private var polling = false
     private var lastUsageRefresh = Date.distantPast
-    private let demo = ProcessInfo.processInfo.arguments.contains("--demo")
+    let isDemo: Bool
     var running: Bool { state == "running" }
-    var activeName: String { accounts.first(where: \.selected)?.label ?? "No account" }
     var selectedReady: Bool { accounts.contains { $0.authenticated } }
 
-    init() {
-        let enabled = UserDefaults.standard.bool(forKey: "runAutomatically")
+    init(demo: Bool = ProcessInfo.processInfo.arguments.contains("--demo") || Bundle.main.object(forInfoDictionaryKey: "GatewayDemoMode") as? Bool == true) {
+        isDemo = demo
+        let enabled = demo ? false : UserDefaults.standard.bool(forKey: "runAutomatically")
         runAutomatically = enabled
-        automatic = AutomaticRun(enabled: enabled, paused: UserDefaults.standard.bool(forKey: "gatewayPaused"))
-        if demo { loadDemo(); return }
+        automatic = AutomaticRun(enabled: enabled, paused: demo ? false : UserDefaults.standard.bool(forKey: "gatewayPaused"))
+        if isDemo { loadDemo(); return }
         monitoring = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.poll()
@@ -139,11 +141,12 @@ func shellQuote(_ value: String) -> String { "'" + value.replacingOccurrences(of
     deinit { monitoring?.cancel() }
 
     func refresh(includeUsage: Bool = false) async {
-        if demo { loadDemo(); return }
+        if isDemo { loadDemo(); return }
         await poll()
         guard !checkingUsage, includeUsage || Date().timeIntervalSince(lastUsageRefresh) > 300 else { return }
         checkingUsage = true; defer { checkingUsage = false }
         for account in accounts where account.authenticated {
+            refreshingAccount = account.id
             do {
                 let data = try await backend.run(["usage", "--account", account.id])
                 let reply = try JSONDecoder().decode(Reply.self, from: data)
@@ -152,11 +155,12 @@ func shellQuote(_ value: String) -> String { "'" + value.replacingOccurrences(of
                 usageErrors[account.id] = nil
             } catch { usageErrors[account.id] = readable(error) }
         }
+        refreshingAccount = nil
         lastUsageRefresh = Date()
     }
 
     private func poll() async {
-        guard !busy, !polling, !demo else { return }
+        guard !busy, !polling, !isDemo else { return }
         polling = true; defer { polling = false }
         do {
             let status = try await backend.reply(["status"])
@@ -165,7 +169,15 @@ func shellQuote(_ value: String) -> String { "'" + value.replacingOccurrences(of
             if let url = status.url { endpoint = url }
             let listing = try await backend.reply(["accounts"])
             guard listing.ok else { throw GatewayFailure(code: listing.code) }
+            let previous = Set(accounts.filter(\.authenticated).map(\.id))
             accounts = listing.accounts ?? []
+            let global = try await backend.reply(["global-status"])
+            guard global.ok else { throw GatewayFailure(code: global.code) }
+            globalEnabled = global.global?.enabled ?? false
+            connectionNeedsUpdate = global.global?.needs_update ?? false
+            if accounts.contains(where: { $0.authenticated && !previous.contains($0.id) }) && !checkingUsage {
+                Task { await self.refresh(includeUsage: true) }
+            }
             startupNeedsApproval = runAutomatically && SMAppService.mainApp.status != .enabled
             if let notice = automatic.attention(for: routing) { notifyAttention(notice) }
             if !busy && automatic.shouldStart(state: state, hasAccount: selectedReady) {
@@ -179,7 +191,7 @@ func shellQuote(_ value: String) -> String { "'" + value.replacingOccurrences(of
     }
 
     func setAutomaticRun(_ enabled: Bool) async {
-        guard !busy, !demo else { return }
+        guard !busy, !isDemo else { return }
         busy = true
         do {
             if enabled {
@@ -201,6 +213,23 @@ func shellQuote(_ value: String) -> String { "'" + value.replacingOccurrences(of
         await poll()
     }
 
+    func setGlobalProvider(_ enabled: Bool) async {
+        guard !busy, !isDemo else { return }
+        busy = true
+        do {
+            let port = URLComponents(string: endpoint)?.port ?? 8787
+            let args = enabled ? ["global-enable", "--port", String(port)] : ["global-disable"]
+            let reply = try await backend.reply(args)
+            guard reply.ok else { throw GatewayFailure(code: reply.code) }
+            globalEnabled = reply.global?.enabled ?? enabled
+            connectionNeedsUpdate = reply.global?.needs_update ?? false
+            message = enabled ? "Connection updated. Restart Codex to apply." : "Connection restored. Restart Codex to apply."
+            isError = false
+        } catch { report(error) }
+        busy = false
+        await poll()
+    }
+
     func openLoginSettings() { SMAppService.openSystemSettingsLoginItems() }
 
     private func notifyAttention(_ text: String) {
@@ -210,8 +239,8 @@ func shellQuote(_ value: String) -> String { "'" + value.replacingOccurrences(of
         let request = UNNotificationRequest(identifier: "gateway-attention", content: content, trigger: nil)
         UNUserNotificationCenter.current().add(request) { _ in }
     }
-    func action(_ args: [String], success: String) async {
-        guard !busy, !demo else { return }
+    func action(_ args: [String], success: String? = nil) async {
+        guard !busy, !isDemo else { return }
         // Persist the user's intent before stopping, so monitoring cannot undo it.
         if args.first == "stop" || args.first == "start" {
             automatic.paused = args.first == "stop"
@@ -226,38 +255,53 @@ func shellQuote(_ value: String) -> String { "'" + value.replacingOccurrences(of
         busy = false
         await poll()
     }
-    func add() async {
-        guard !busy, !demo else { return }
+    func add(label: String) async -> Bool {
+        guard !busy, !isDemo else { return false }
+        var completed = false
         busy = true
         do {
             let reply = try await backend.reply(["account-add", "--label", label.trimmingCharacters(in: .whitespacesAndNewlines)])
             guard reply.ok, let account = reply.account else { throw GatewayFailure(code: reply.code) }
-            label = ""; adding = false
             try openTerminal(backend.loginCommand(id: account.id))
-            loginPending = true; message = "Finish signing in in Terminal, then click Check sign-in."; isError = false
+            loginPending = true; message = nil; isError = false
+            completed = true
         } catch { report(error) }
         busy = false; await refresh()
+        return completed
     }
     func login(_ account: Account) {
-        guard !demo else { return }
+        guard !isDemo else { return }
         do {
             try openTerminal(backend.loginCommand(id: account.id))
-            loginPending = true; message = "Finish signing in in Terminal, then click Check sign-in."; isError = false
+            loginPending = true; message = nil; isError = false
         } catch { report(error) }
     }
     func checkLogin() async {
         await refresh(includeUsage: true)
         loginPending = accounts.contains { !$0.authenticated }
     }
-    func createClient() async {
-        guard !busy, !demo else { return }
+    func rename(_ account: Account, to newLabel: String) async -> Bool {
+        guard !busy, !isDemo else { return false }
+        var completed = false
+        busy = true
+        do {
+            let reply = try await backend.reply(["account-rename", "--account", account.id, "--label", newLabel.trimmingCharacters(in: .whitespacesAndNewlines)])
+            guard reply.ok else { throw GatewayFailure(code: reply.code) }
+            message = nil; isError = false; completed = true
+        } catch { report(error) }
+        busy = false
+        await poll()
+        return completed
+    }
+    func createClient(modelID: String) async -> Bool {
+        guard !busy, !isDemo else { return false }
         let panel = NSSavePanel()
         panel.title = "Create a Codex client profile"
         panel.message = "Choose a new folder name. Existing configuration is never overwritten."
         panel.nameFieldStringValue = "Codex Gateway Client"
         panel.canCreateDirectories = true
         NSApp.activate(ignoringOtherApps: true)
-        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard panel.runModal() == .OK, let url = panel.url else { return false }
         busy = true; defer { busy = false }
         do {
             let port = URLComponents(string: endpoint)?.port ?? 8787
@@ -265,12 +309,12 @@ func shellQuote(_ value: String) -> String { "'" + value.replacingOccurrences(of
             guard reply.ok, let command = reply.launch_command else { throw GatewayFailure(code: reply.code) }
             let launch = "export PATH=" + shellQuote(backend.environment["PATH"] ?? "") + "\n" + command
             try openTerminal(launch)
-            connecting = false; message = "Client profile created. Codex is opening in Terminal."; isError = false
-        } catch { report(error) }
+            message = nil; isError = false
+            return true
+        } catch { report(error); return false }
     }
     func copyEndpoint() {
         NSPasteboard.general.clearContents(); NSPasteboard.general.setString(endpoint, forType: .string)
-        message = "Gateway address copied."; isError = false
     }
     private func openTerminal(_ command: String) throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("codex-gateway-" + UUID().uuidString)
@@ -298,6 +342,7 @@ func shellQuote(_ value: String) -> String { "'" + value.replacingOccurrences(of
         case "port_in_use": return "Port 8787 is occupied. Stop the other service before starting."
         case "client_directory_exists": return "Choose a new folder name; that folder already exists."
         case "unsafe_client_directory": return "Choose a new folder outside gateway and existing Codex state."
+        case "global_config_conflict", "global_config_changed", "global_config_unsafe": return "Global Codex config needs inspection. No settings were changed."
         case "invalid_arguments": return "Check the account label or model ID and try again."
         case "runtime_unavailable", "unsafe_runtime", "lifecycle_busy", "unavailable": return "Gateway needs attention. Run doctor --json in Terminal."
         case "backend_missing": return "Backend is missing. Rebuild the app using scripts/build-macos.sh."
@@ -306,9 +351,10 @@ func shellQuote(_ value: String) -> String { "'" + value.replacingOccurrences(of
     }
     private func loadDemo() {
         state = "running"
-        routing = Routing(mode: "automatic", weekly_reserve_percent: 5, state: "ready", account: "default")
-        accounts = [Account(id: "default", label: "Personal", selected: true, authenticated: true), Account(id: "second", label: "Work", selected: false, authenticated: true), Account(id: "third", label: "Extra", selected: false, authenticated: false)]
-        usages = ["default": Usage(checked_at: ISO8601DateFormatter().string(from: Date()), buckets: [UsageBucket(id: "codex", primary: UsageWindow(remaining_percent: 36, window_minutes: 300, resets_at: Date().addingTimeInterval(7200).timeIntervalSince1970), secondary: UsageWindow(remaining_percent: 72, window_minutes: 10080, resets_at: Date().addingTimeInterval(172800).timeIntervalSince1970))]), "second": Usage(checked_at: ISO8601DateFormatter().string(from: Date()), buckets: [UsageBucket(id: "codex", primary: UsageWindow(remaining_percent: 100, window_minutes: 300, resets_at: Date().addingTimeInterval(12000).timeIntervalSince1970), secondary: UsageWindow(remaining_percent: 85, window_minutes: 10080, resets_at: Date().addingTimeInterval(300000).timeIntervalSince1970))])]
-        message = "Design preview · sample accounts and usage"; isError = false
+        routing = Routing(mode: "automatic", weekly_reserve_percent: 5, state: "ready", account: "second")
+        globalEnabled = true
+        accounts = [Account(id: "default", label: "alex@personal.example", selected: false, authenticated: true), Account(id: "second", label: "alex@studio.example", selected: true, authenticated: true), Account(id: "third", label: "Additional account", selected: false, authenticated: false)]
+        usages = ["default": Usage(checked_at: ISO8601DateFormatter().string(from: Date()), buckets: [UsageBucket(id: "codex", primary: UsageWindow(remaining_percent: 36, window_minutes: 300, resets_at: Date().addingTimeInterval(7200).timeIntervalSince1970), secondary: UsageWindow(remaining_percent: 0, window_minutes: 10080, resets_at: Date().addingTimeInterval(172800).timeIntervalSince1970))]), "second": Usage(checked_at: ISO8601DateFormatter().string(from: Date()), buckets: [UsageBucket(id: "codex", primary: UsageWindow(remaining_percent: 100, window_minutes: 300, resets_at: Date().addingTimeInterval(12000).timeIntervalSince1970), secondary: UsageWindow(remaining_percent: 91, window_minutes: 10080, resets_at: Date().addingTimeInterval(300000).timeIntervalSince1970))])]
+        message = nil; isError = false
     }
 }

@@ -11,8 +11,9 @@ export function accountRoot(root, id) {
 }
 export async function getAccount(root, id) {
   const path = accountRoot(root, id);
-  if (id === 'default') return { id, label: 'Default', path };
-  const metadata = await readPrivate(join(path, 'account.json'));
+  let metadata;
+  try { metadata = await readPrivate(join(path, 'account.json')); }
+  catch (e) { if (id === 'default' && e.code === 'ENOENT') return { id, label: 'Default', path }; throw e; }
   if (typeof metadata?.label !== 'string' || !metadata.label.trim() || metadata.label.length > 60) throw accountError('invalid_account', 'Account metadata is invalid.');
   return { id, label: metadata.label, path };
 }
@@ -38,11 +39,24 @@ export async function listAccounts(root) {
   return accounts;
 }
 export async function addAccount(root, label) {
-  if (typeof label !== 'string' || !label.trim() || label.trim().length > 60 || /[\x00-\x1f\x7f]/.test(label)) throw accountError('invalid_arguments', 'Account label must be 1–60 printable characters.');
+  validateLabel(label);
   await ensureState(root);
   const id = randomBytes(12).toString('hex'), path = accountRoot(root, id);
   await ensureState(path);
   await writePrivate(join(path, 'account.json'), JSON.stringify({ label: label.trim() }));
+  return { id, label: label.trim() };
+}
+function validateLabel(label) {
+  if (typeof label !== 'string' || !label.trim() || label.trim().length > 60 || /[\x00-\x1f\x7f]/.test(label)) throw accountError('invalid_arguments', 'Account label must be 1–60 printable characters.');
+}
+export async function renameAccount(root, id, label) {
+  validateLabel(label);
+  const account = await getAccount(root, id);
+  await ensureState(account.path);
+  const target = join(account.path, 'account.json');
+  const temporary = join(account.path, `account-${randomBytes(12).toString('hex')}.json`);
+  await writePrivate(temporary, JSON.stringify({ label: label.trim() }));
+  try { await rename(temporary, target); } finally { await unlink(temporary).catch(() => {}); }
   return { id, label: label.trim() };
 }
 export async function selectAccount(root, id) {

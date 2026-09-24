@@ -7,7 +7,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { once } from 'node:events';
 import net from 'node:net';
-import { addAccount, listAccounts, selectedAccount, selectAccount, getAccount, accountRoot } from '../src/accounts.mjs';
+import { addAccount, renameAccount, listAccounts, selectedAccount, selectAccount, getAccount, accountRoot } from '../src/accounts.mjs';
 import { ensureState, writePrivate } from '../src/state.mjs';
 import { readUsage, normalizeUsage } from '../src/usage.mjs';
 async function fixture(fn) {
@@ -40,6 +40,18 @@ test('account selection rejects symlink state', () => fixture(async(root, auth) 
   await symlink(join(root, 'other'), join(root, 'selected-account.json'));
   await assert.rejects(selectAccount(root, account.id), /Symbolic links/);
   await assert.rejects(selectedAccount(root), /Symbolic links/);
+}));
+test('default and added account labels can be renamed without changing selection or credentials', () => fixture(async(root, auth) => {
+  await auth(root);
+  const other = await addAccount(root, 'Work');
+  assert.equal((await getAccount(root, 'default')).label, 'Default');
+  await renameAccount(root, 'default', 'Personal');
+  await renameAccount(root, other.id, 'Second');
+  assert.deepEqual((await listAccounts(root)).map(account => account.label), ['Personal', 'Second']);
+  assert.equal((await selectedAccount(root)).id, 'default');
+  assert.equal((await listAccounts(root))[0].authenticated, true);
+  await assert.rejects(renameAccount(root, 'default', 'bad\nlabel'), { code: 'invalid_arguments' });
+  assert.equal((await getAccount(root, 'default')).label, 'Personal');
 }));
 test('account selection rejects malformed metadata without replacing the selected account', () => fixture(async (root, auth) => {
   await auth(root);
