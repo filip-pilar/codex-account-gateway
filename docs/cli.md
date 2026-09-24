@@ -20,7 +20,8 @@ Invoke `node src/cli.mjs COMMAND`. No global installation is required. `CODEX_GA
 | `openai-route-status` | none | Compatibility alias for `global-status` |
 | `openai-route-enable` | optional `--port NUMBER` | Compatibility alias for `global-enable` |
 | `openai-route-disable` | none | Compatibility alias for `global-disable` |
-| `usage` | `--account ID` | Read usage through official CLI app-server; no inference |
+| `usage` | `--account ID` | One-off diagnostic read through official CLI app-server; no inference |
+| `usage-status` | `--refresh` | Read the running gateway’s shared usage cache; optionally request a background refresh |
 | `help` | `--json` | Usage |
 
 Ports default to 8787 and must be 1024–65535. Unknown/duplicate options are errors. `start` without an explicit port accepts an existing instance's port; an explicit conflicting port returns `already_running_other_port`. `setup` defaults to 8787 independently: use the running instance's port when it differs. `doctor` checks the recorded port unless overridden.
@@ -87,15 +88,21 @@ node src/cli.mjs usage --account RETURNED_ID --json
 
 New success codes: `accounts`, `account_added`, `account_selected`, `usage`. New failure codes: `invalid_account`, `gateway_busy`, `account_switch_failed`, `usage_unavailable`, `usage_timeout`. `login_required` and `cli_unavailable` retain their meaning. Switching a running gateway uses its authenticated control endpoint and preserves the address. It returns `gateway_busy` while a request or selection is in progress; there is no queued switch or automatic retry. New inference requests during the brief selection mutation receive HTTP 503 / `account_switch_in_progress`.
 
-`usage` returns `account`, `checked_at` (ISO timestamp), and `buckets`. Each bucket has `id`, `primary`, and `secondary`; each available window has `remaining_percent`, nullable `window_minutes`, and nullable `resets_at` (Unix seconds). Missing windows are null. Upstream messages, credentials, credits, and unrelated protocol notifications are never printed. Each read has a 15-second deadline and 1 MiB output cap. The official CLI owns authentication and renewal.
+`usage` returns `account`, `checked_at` (ISO timestamp), and `buckets`. Each bucket has `id`, `primary`, and `secondary`; each available window has `remaining_percent`, nullable `window_minutes`, and nullable `resets_at` (Unix seconds). Missing windows are null. Upstream messages, credentials, credits, and unrelated protocol notifications are never printed. Each read has a 15-second deadline and 1 MiB output cap. The official CLI owns authentication and renewal. This one-off diagnostic does not update a running gateway; use `usage-status --refresh` to refresh its routing readings. Usage errors include a safe `category` when available; RPC messages and stderr remain private.
+
+`usage-status` requires a verified running gateway and returns `code: "usage_status"`, `routing`, and `usage_status`. The latter contains `checking`, nullable `next_check_at`, and an `accounts` array. Each entry contains `account`, nullable `checked_at`, `buckets`, `stale`, and `diagnostics` (`last_attempt_at`, `last_success_at`, `last_error`, `consecutive_failures`). Error categories distinguish timeouts, missing CLI/login, RPC/protocol failures, missing weekly data, and expired reports without exposing upstream text. `--refresh` starts or joins the shared background check and returns immediately; poll without the flag to read its result. Local control failures return `runtime_unavailable` or `usage_status_unavailable`.
 
 Selection is stored privately in `selected-account.json`. Added profile metadata and official CLI state live under `accounts/<id>/`. Selection writes are atomic and serialized through the gateway lifecycle lock. No existing authentication is moved or copied. See [macOS UI](macos.md).
 
 ## Automatic weekly routing
 
-Every running gateway checks all signed-in accounts at startup and every 60 seconds after the preceding check finishes, with at most three usage CLI children at once. The selected account stays selected while its reported weekly remaining is greater than 5%. At or below 5%, the next usable account in `accounts` list order is selected, wrapping around. Selection persists across restarts. Other limit windows are not switching triggers.
+Every running gateway checks all signed-in accounts at startup and every 60 seconds after the preceding successful check finishes, with at most three usage CLI children at once. If no account supplies a valid reading, retries back off to two, four, then five minutes. Explicit `usage-status --refresh` requests a check immediately; concurrent refreshes share the same check. Inference requests never trigger or wait for usage reads.
 
-Only a reported seven-day window from the `codex` bucket (or the sole reported bucket) qualifies. Missing/ambiguous data is unavailable. A transient read failure may use the last successful snapshot for less than five minutes, but never after its reported reset time. A new check must confirm replenished quota; wall-clock time alone does not create quota. Requests already in progress retain their captured credentials and finish normally. No bodies, encrypted reasoning, or client turn-state headers are rewritten; there is no turn tracking or inference replay. The 5% threshold is approximate because reads are periodic and active requests can continue consuming usage.
+The selected signed-in account stays selected unless its last valid weekly reading is at or below 5%. At that reserve, the next account with fresh usage above 5% is preferred in list order, wrapping around; accounts with unknown usage are fallback candidates. An account with unknown or stale usage can keep serving requests. Selection persists across restarts. Other limit windows are not switching triggers.
+
+Only a reported seven-day window from the `codex` bucket (or the sole reported bucket) qualifies. Missing/ambiguous data and expired reports do not replace a valid snapshot. A reading becomes stale after five minutes or its reported reset time. A confirmed reserve remains in effect until a valid new reading clears it; the clock alone does not create quota. Snapshots are memory-only, so after restart an account's usage is initially unknown. While usage is unavailable, continued requests may consume into the intended 5% reserve. This is an availability preference, not a strict spending cap.
+
+Requests already in progress retain their captured credentials and finish normally. No bodies, encrypted reasoning, or client turn-state headers are rewritten; there is no turn tracking or inference replay. Actual upstream login and rate-limit failures are returned without retrying inference.
 
 `status --json` retains its existing runtime codes and adds `routing`:
 
@@ -103,6 +110,6 @@ Only a reported seven-day window from the `codex` bucket (or the sole reported b
 {"mode":"automatic","weekly_reserve_percent":5,"state":"ready","account":"default"}
 ```
 
-Routing states are `checking_usage`, `ready`, `weekly_reserve_reached`, `usage_unavailable`, and `login_required`. A runtime can be `running` while routing is paused. Exhausted accounts return HTTP 503 / `weekly_reserve_reached` without contacting upstream. Missing fresh usage returns HTTP 503 / `usage_unavailable`; missing credentials retains HTTP 401 / `isolated_login_required`. Background checks resume routing when an account becomes usable. Manual selection does not bypass the reserve.
+Routing states include `checking_usage`, `ready`, `usage_degraded`, `weekly_reserve_reached`, `usage_unavailable`, and `login_required`. `usage_degraded` means requests continue but usage is stale, missing, or the last check failed. A runtime can be `running` while routing is paused. All signed-in accounts confirmed at reserve return HTTP 503 / `weekly_reserve_reached` without contacting upstream; missing credentials retains HTTP 401 / `isolated_login_required`. Usage-fetch failures alone do not pause routing. `usage_unavailable` is retained for lifecycle/control failures and compatibility. Background checks resume routing when a reserve is cleared. Manual selection cannot bypass a confirmed reserve.
 
 Shutdown aborts usage reads and terminates their owned CLI children. Usage snapshots are memory-only. The Mac app's opt-in login item and restart monitoring are described in [automatic operation](macos.md#automatic-operation); the CLI does not install a service.

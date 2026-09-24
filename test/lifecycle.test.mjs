@@ -25,8 +25,9 @@ else if (process.argv.includes('app-server')) {
     const message = JSON.parse(line);
     if (message.method === 'initialize') console.log(JSON.stringify({id:1,result:{}}));
     if (message.method === 'account/rateLimits/read') {
-      let usedPercent = 20;
-      try { usedPercent = JSON.parse(readFileSync(join(process.env.CODEX_HOME, 'fixture-usage.json'), 'utf8')).used; } catch {}
+      let usedPercent = 20, failure = false;
+      try { const fixture = JSON.parse(readFileSync(join(process.env.CODEX_HOME, 'fixture-usage.json'), 'utf8')); usedPercent = fixture.used; failure = fixture.failure; } catch {}
+      if (failure) { console.log(JSON.stringify({id:2,error:{message:'private fixture failure'}})); return; }
       console.log(JSON.stringify({id:2,result:{rateLimits:{primary:{usedPercent,windowDurationMins:10080}}}}));
     }
   });
@@ -301,4 +302,44 @@ test('CLI automatically selects a usable account and persists it across restart'
       await writeFile(join(root, 'codex', 'fixture-usage.json'), JSON.stringify({ used: 95 }));
     }
   }
+}));
+
+test('shared usage CLI reports cached routing readings, refreshes them, and retains safe failure details', () => fixture(async ({ run, root, auth, freePort }) => {
+  await auth();
+  assert.equal((await run(['usage-status', '--json'])).value.code, 'runtime_unavailable');
+  assert.equal((await run(['start', '--background', '--port', String(await freePort()), '--json'])).value.code, 'started');
+  async function settled() {
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline) {
+      const result = await run(['usage-status', '--json']);
+      assert.equal(result.value.code, 'usage_status');
+      assert.doesNotMatch(result.out, /controlToken|instanceId|private fixture|access_token/);
+      if (!result.value.usage_status.checking) return result.value;
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    assert.fail('usage refresh did not finish');
+  }
+  const initial = await settled();
+  assert.equal(initial.usage_status.accounts[0].buckets[0].primary.remaining_percent, 80);
+  const path = join(root, 'codex', 'fixture-usage.json');
+  await writeFile(path, JSON.stringify({ used: 95 }));
+  const cached = await run(['usage-status', '--json']);
+  assert.equal(cached.value.usage_status.accounts[0].buckets[0].primary.remaining_percent, 80);
+  assert.equal((await run(['usage-status', '--refresh', '--json'])).value.code, 'usage_status');
+  const reserve = await settled();
+  assert.equal(reserve.routing.state, 'weekly_reserve_reached');
+  assert.equal(reserve.usage_status.accounts[0].buckets[0].primary.remaining_percent, 5);
+  await writeFile(path, JSON.stringify({ failure: true }));
+  await run(['usage-status', '--refresh', '--json']);
+  const failed = await settled();
+  assert.equal(failed.routing.state, 'weekly_reserve_reached');
+  assert.equal(failed.usage_status.accounts[0].diagnostics.last_error, 'rpc_error');
+  assert.equal(failed.usage_status.accounts[0].diagnostics.consecutive_failures, 1);
+  assert.equal(failed.usage_status.accounts[0].stale, true);
+  assert.equal(failed.usage_status.accounts[0].buckets[0].primary.remaining_percent, 5);
+  await writeFile(path, JSON.stringify({ used: 10 }));
+  await run(['usage-status', '--refresh', '--json']);
+  const recovered = await settled();
+  assert.equal(recovered.routing.state, 'ready');
+  assert.equal(recovered.usage_status.accounts[0].diagnostics.last_error, null);
 }));

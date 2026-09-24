@@ -26,7 +26,7 @@ function output(value) {
 function options() {
   const allowed = {
     help: [], '--help': [], '-h': [], login: ['--account'],
-    accounts: [], 'account-add': ['--label'], 'account-rename': ['--account', '--label'], 'account-select': ['--account'], usage: ['--account'],
+    accounts: [], 'account-add': ['--label'], 'account-rename': ['--account', '--label'], 'account-select': ['--account'], usage: ['--account'], 'usage-status': ['--refresh'],
     'global-status': [], 'global-enable': ['--port'], 'global-disable': [],
     'openai-route-status': [], 'openai-route-enable': ['--port'], 'openai-route-disable': [],
     start: ['--port', '--background'], stop: [], status: [], doctor: ['--port'],
@@ -37,7 +37,7 @@ function options() {
   for (let i = 0; i < args.length; i++) {
     const key = args[i];
     if (key !== '--json' && !allowed.includes(key) || key in opts) throw error('invalid_arguments', 'Unknown or duplicate option. Run --help.');
-    if (['--json', '--background'].includes(key)) opts[key] = true;
+    if (['--json', '--background', '--refresh'].includes(key)) opts[key] = true;
     else {
       if (!args[i + 1] || args[i + 1].startsWith('--')) throw error('invalid_arguments', `Missing value for ${key}.`);
       opts[key] = args[++i];
@@ -100,6 +100,31 @@ async function selectRunning(r, id) {
       res.on('close', () => finish(null));
     });
     const timer = setTimeout(() => finish(null), 5000);
+    req.on('error', () => finish(null)); req.end();
+  });
+}
+
+async function usageStatus(r, refresh) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = value => {
+      if (settled) return;
+      settled = true; clearTimeout(timer); req.destroy();
+      if (value?.instanceId === r.instanceId && value.usage_status) resolve(value);
+      else reject(error('usage_status_unavailable', 'Gateway usage status is unavailable. Check that the gateway is up to date.', 'status'));
+    };
+    const req = http.request({ hostname: '127.0.0.1', port: r.port, path: '/control/usage',
+      method: refresh ? 'POST' : 'GET', agent: false, headers: { authorization: `Bearer ${r.controlToken}` } }, res => {
+      let size = 0; const chunks = [];
+      res.on('data', chunk => { size += chunk.length; if (size > 1024 * 1024) finish(null); else chunks.push(chunk); });
+      res.on('error', () => finish(null));
+      res.on('end', () => {
+        try { finish(res.statusCode === 200 ? JSON.parse(Buffer.concat(chunks).toString()) : null); }
+        catch { finish(null); }
+      });
+      res.on('close', () => finish(null));
+    });
+    const timer = setTimeout(() => finish(null), 1500);
     req.on('error', () => finish(null)); req.end();
   });
 }
@@ -211,6 +236,7 @@ async function start(opts, port) {
       await clearOwned(r.instanceId);
     })().catch(() => { process.exitCode = 1; });
     server = await startServer({ port, credentials: router.credentials, onSelect: router.select,
+      usageStatus: router.usageStatus, refreshUsage: router.refresh,
       routingStatus: router.status, controlToken: r.controlToken, instanceId: r.instanceId, onStop: stop });
     try { await writePrivate(runtime, JSON.stringify(r)); } catch (e) { await server.close(); await router.close(); throw e; }
     void router.refresh();
@@ -235,6 +261,7 @@ global-status                               Inspect the Codex gateway connection
 global-enable [--port NUMBER]              Connect new and existing OpenAI tasks
 global-disable                              Restore both Codex connection settings
 usage [--account ID]                        Read reported limits via official CLI
+usage-status [--refresh]                    Read shared usage; optionally refresh in background
 start [--port NUMBER] [--background]        Start or report existing instance
 status                                     Verify selected instance
 stop                                       Stop selected instance (idempotent)
@@ -258,6 +285,12 @@ CODEX_GATEWAY_HOME selects private state. The global and openai-route commands e
   if (command === 'usage') {
     const account = opts['--account'] ? await getAccount(root, opts['--account']) : await selectedAccount(root);
     return output({ ok: true, code: 'usage', account: account.id, ...await readUsage(account.path) });
+  }
+  if (command === 'usage-status') {
+    const r = await saved();
+    if (!r || !await probe(r)) throw error('runtime_unavailable', 'A verified running gateway is required.', 'status');
+    const result = await usageStatus(r, opts['--refresh']);
+    return output({ ok: true, code: 'usage_status', usage_status: result.usage_status, routing: result.routing });
   }
   if (command === 'account-select') {
     if (!opts['--account']) throw error('invalid_arguments', 'account-select requires --account.');
@@ -328,7 +361,7 @@ main().catch(e => {
   const known = { EADDRINUSE: ['port_in_use', 'Port is already in use.', 'choose_another_port'], EACCES: ['permission_denied', 'Filesystem or port permission denied.', 'inspect_permissions'], ENOENT: ['path_missing', 'A required parent directory does not exist.', 'create_parent_directory'] }[e.code];
   const code = known?.[0] ?? (e.next_action !== undefined ? e.code : 'operation_failed');
   const message = known?.[1] ?? (e.next_action !== undefined ? e.message : 'Operation failed; check private paths and permissions.');
-  const result = { ok: false, code, message, next_action: known?.[2] ?? e.next_action ?? 'doctor' };
+  const result = { ok: false, code, message, next_action: known?.[2] ?? e.next_action ?? 'doctor', ...(e.category ? { category: e.category } : {}) };
   if (json || process.connected) output(result);
   else console.error(`codex-gateway: ${message}`);
   process.exitCode = code === 'invalid_arguments' ? 2 : 1;

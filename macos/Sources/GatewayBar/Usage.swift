@@ -1,5 +1,38 @@
 import Foundation
 
+struct UsageStatus: Decodable {
+    let checking: Bool
+    let next_check_at: String?
+    let accounts: [UsageSnapshot]
+}
+
+struct UsageSnapshot: Decodable {
+    let account: String
+    let checked_at: String?
+    let buckets: [UsageBucket]
+    let stale: Bool
+    let diagnostics: UsageDiagnostics
+    var usage: Usage? { checked_at.map { Usage(checked_at: $0, buckets: buckets) } }
+    var notice: String? {
+        switch diagnostics.last_error {
+        case "login_required": return "Sign in to this account first."
+        case "cli_unavailable": return "The official Codex CLI is unavailable."
+        case "timeout": return "Usage check timed out. Retrying automatically."
+        case "missing_weekly_window": return "Weekly usage was not reported. Retrying automatically."
+        case "stale_response": return "Usage report is out of date. Retrying automatically."
+        case .some: return "Usage check failed. Retrying automatically."
+        case .none: return stale ? "Usage is out of date or unavailable. Retrying automatically." : nil
+        }
+    }
+}
+
+struct UsageDiagnostics: Decodable {
+    let last_attempt_at: String?
+    let last_success_at: String?
+    let last_error: String?
+    let consecutive_failures: Int
+}
+
 struct UsageWindow: Decodable {
     let remaining_percent: Double
     let window_minutes: Double?

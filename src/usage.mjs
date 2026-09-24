@@ -24,45 +24,46 @@ export function normalizeUsage(result) {
 // Credentials, RPC errors and unrelated notifications never leave this function.
 export async function readUsage(root, { executable = 'codex', timeoutMs = 15000, signal } = {}) {
   try { await readAuth(root, { create: false }); }
-  catch { throw accountError('login_required', 'Sign in to this account first.'); }
-  if (signal?.aborted) throw accountError('usage_unavailable', 'Usage check cancelled.');
+  catch { throw Object.assign(accountError('login_required', 'Sign in to this account first.'), { category: 'login_required' }); }
+  if (signal?.aborted) throw Object.assign(accountError('usage_unavailable', 'Usage check cancelled.'), { category: 'cancelled' });
   const env = { ...process.env, CODEX_HOME: join(root, 'codex') };
   for (const key of ['OPENAI_API_KEY', 'CODEX_API_KEY', 'OPENAI_BASE_URL']) delete env[key];
   return new Promise((resolve, reject) => {
     const child = spawn(executable, ['-c', 'cli_auth_credentials_store="file"', 'app-server', '--listen', 'stdio://'], { env, stdio: ['pipe', 'pipe', 'ignore'] });
     let buffer = '', bytes = 0, settled = false, initialized = false;
     const decoder = new StringDecoder('utf8');
-    const finish = (code, value) => {
+    const finish = (code, value, category) => {
       if (settled) return;
       settled = true; clearTimeout(timer);
       signal?.removeEventListener('abort', abort);
       child.stdin.destroy(); child.stdout.destroy(); child.kill('SIGKILL');
-      if (code) reject(accountError(code, code === 'usage_timeout' ? 'Usage check timed out.' : 'Usage is unavailable. Check your account login.'));
+      if (code) reject(Object.assign(accountError(code, code === 'usage_timeout' ? 'Usage check timed out.' : 'Usage is unavailable. Try refreshing later.'), { category }));
       else resolve({ checked_at: new Date().toISOString(), buckets: normalizeUsage(value) });
     };
-    const timer = setTimeout(() => finish('usage_timeout'), timeoutMs);
-    const abort = () => finish('usage_unavailable');
+    const timer = setTimeout(() => finish('usage_timeout', null, 'timeout'), timeoutMs);
+    const abort = () => finish('usage_unavailable', null, 'cancelled');
     signal?.addEventListener('abort', abort, { once: true });
     const send = value => child.stdin.write(JSON.stringify(value) + '\n');
-    child.once('error', () => finish('cli_unavailable'));
-    child.once('exit', () => finish('usage_unavailable'));
-    child.stdin.on('error', () => finish('usage_unavailable'));
+    child.once('error', () => finish('cli_unavailable', null, 'cli_unavailable'));
+    child.once('exit', () => finish('usage_unavailable', null, 'child_exit'));
+    child.stdin.on('error', () => finish('usage_unavailable', null, 'pipe_error'));
     child.stdout.on('data', chunk => {
       bytes += chunk.length;
-      if (bytes > 1024 * 1024) return finish('usage_unavailable');
+      if (bytes > 1024 * 1024) return finish('usage_unavailable', null, 'output_limit');
       buffer += decoder.write(chunk);
       let end;
       while ((end = buffer.indexOf('\n')) >= 0) {
         const line = buffer.slice(0, end); buffer = buffer.slice(end + 1);
-        let message; try { message = JSON.parse(line); } catch { return finish('usage_unavailable'); }
-        if (!message || typeof message !== 'object' || Array.isArray(message)) return finish('usage_unavailable');
+        let message; try { message = JSON.parse(line); } catch { return finish('usage_unavailable', null, 'invalid_response'); }
+        if (!message || typeof message !== 'object' || Array.isArray(message)) return finish('usage_unavailable', null, 'invalid_response');
         if (message.id === 1 && !initialized) {
-          if (message.error || !message.result) return finish('usage_unavailable');
+          if (message.error || !message.result) return finish('usage_unavailable', null, message.error ? 'rpc_error' : 'invalid_response');
           initialized = true;
           send({ method: 'initialized' });
           send({ id: 2, method: 'account/rateLimits/read' });
         } else if (message.id === 2 && initialized) {
-          return finish(message.error || !message.result ? 'usage_unavailable' : null, message.result);
+          return finish(message.error || !message.result ? 'usage_unavailable' : null, message.result,
+            message.error ? 'rpc_error' : 'invalid_response');
         }
       }
     });

@@ -38,7 +38,7 @@ struct AutomaticRun {
     mutating func attention(for routing: Routing?) -> String? {
         guard let routing else { return nil }
         guard let notice = routing.notice else {
-            if routing.state == "ready" { lastNotice = nil }
+            if ["ready", "usage_degraded"].contains(routing.state) { lastNotice = nil }
             return nil
         }
         guard routing.state != lastNotice else { return nil }

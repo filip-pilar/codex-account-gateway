@@ -116,11 +116,11 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
 test('usage RPC errors are redacted; timeout and cancellation terminate children', () => fixture(async(root, auth) => {
   await auth(root); const executable = join(root, 'codex-fixture');
   await writeFile(executable, `#!${process.execPath}\nconsole.log(JSON.stringify({id:1,error:{message:'private detail'}})); setInterval(()=>{},1000);`, {mode:0o700});
-  await assert.rejects(readUsage(root,{executable}), e => e.code === 'usage_unavailable' && !e.message.includes('private'));
+  await assert.rejects(readUsage(root,{executable}), e => e.code === 'usage_unavailable' && e.category === 'rpc_error' && !e.message.includes('private') && !e.message.includes('login'));
   await writeFile(executable, `#!${process.execPath}\nconsole.log('null'); setInterval(()=>{},1000);`, {mode:0o700});
-  await assert.rejects(readUsage(root,{executable}), {code:'usage_unavailable'});
+  await assert.rejects(readUsage(root,{executable}), {code:'usage_unavailable',category:'invalid_response'});
   await writeFile(executable, `#!${process.execPath}\nsetInterval(()=>{},1000);`, {mode:0o700});
-  const start = Date.now(); await assert.rejects(readUsage(root,{executable,timeoutMs:100}), {code:'usage_timeout'});
+  const start = Date.now(); await assert.rejects(readUsage(root,{executable,timeoutMs:100}), {code:'usage_timeout',category:'timeout'});
   assert.ok(Date.now()-start < 2000);
   const observer = net.createServer();
   observer.listen(0, '127.0.0.1');

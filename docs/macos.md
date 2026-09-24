@@ -27,23 +27,23 @@ The default backing state is `~/.local/share/codex-gateway`; `CODEX_GATEWAY_HOME
 
 ## Additional accounts
 
-Click **Add Account…**, enter a label, and complete that account's official login in Terminal. Choose the intended account in the browser; profiles isolate credentials, but do not force your browser to choose a different login automatically. Click **Check Sign-in**. Signed-in accounts join the pool automatically. A checkmark and blue highlight identify the selected account; routine status stays in the header, and notices appear only when attention is needed. Clicking a row opens its details; **Use This Account** explicitly changes selection. Accounts at the weekly reserve or without fresh usage cannot be manually selected from the app. Use **Rename…** in details to change any account label.
+Click **Add Account…**, enter a label, and complete that account's official login in Terminal. Choose the intended account in the browser; profiles isolate credentials, but do not force your browser to choose a different login automatically. Click **Check Sign-in**. Signed-in accounts join the pool automatically. A checkmark and blue highlight identify the selected account; routine status stays in the header, and notices appear only when attention is needed. Clicking a row opens its details; **Use This Account** explicitly changes selection. Accounts with unknown usage can be manually selected. Accounts at a confirmed weekly reserve cannot be selected until a valid reading clears it. Use **Rename…** in details to change any account label.
 
 Each added account has its own `accounts/<random-id>/codex` directory. No authentication files or plugins are copied. The selected account persists across gateway restarts. The existing Default profile remains supported.
 
-Automatic switching preserves the gateway's address and process. When weekly remaining reaches 5%, new requests use the next signed-in account with fresh usage above 5%. Existing requests finish on their original account. No model request is replayed. Manual selection is refused while a request is running and cannot bypass the reserve. One existing Desktop task completed a turn through an alternate backing profile; broader conversation compatibility remains unverified.
+Automatic switching preserves the gateway's address and process. When weekly remaining reaches 5%, new requests prefer the next signed-in account with fresh usage above 5%, falling back to an account with unknown usage. Existing requests finish on their original account. No model request is replayed. Manual selection is refused while a request is running and cannot bypass the reserve. One existing Desktop task completed a turn through an alternate backing profile; broader conversation compatibility remains unverified.
 
 ## Automatic operation
 
-The backend checks reported usage on startup and every minute, even with the menu closed. It keeps the current usable account and follows list order when switching, wrapping around. All accounts at or below 5% pauses new requests; routing resumes once a fresh check confirms available quota. Missing weekly data is unavailable, and short-window limits do not trigger switching. Polling and in-flight requests mean 5% is a switching threshold, not an exact spending cap.
+The backend checks reported usage on startup and every minute, even with the menu closed. It keeps the current usable account and follows list order when switching, wrapping around. All accounts confirmed at or below 5% pauses new requests; routing resumes once a fresh check confirms available quota. Missing or stale weekly data alone does not pause requests, including immediately after a restart. The app shows “Usage unavailable; requests continuing.” Short-window limits do not trigger switching. When usage checks fail for every account, retries back off up to five minutes. Usage outages, polling, and in-flight requests mean 5% is a switching threshold, not an exact spending cap.
 
 **Keep gateway running** registers this app as a login item and checks the backend every ten seconds while the app is open. It restarts a verified stopped/dead instance, at most once a minute, after an account has been signed in. A deliberate **Stop Gateway** persists across app launches; **Start** or enabling automatic operation clears that pause. Turning off Keep gateway running removes login startup and restart monitoring; it does not stop an already-running backend. Quitting the app stops monitoring until its next launch.
 
-When all accounts reach the reserve or routing needs login/usage attention, the app shows the reason and posts one notification per condition until routing recovers, if macOS notifications are allowed. Successful account switches are silent. Notification delivery still needs validation on the user's installed app.
+When all accounts reach the reserve or routing needs login attention, the app shows the reason and posts one notification per condition until routing recovers, if macOS notifications are allowed. Successful account switches are silent. Notification delivery still needs validation on the user's installed app.
 
 ## Usage
 
-The app launches the official CLI's stdio app-server and calls only `initialize` and `account/rateLimits/read`. It never creates a thread, sends model input, purchases credits, or consumes reset credits. This integration remains subject to CLI changes.
+While the gateway runs, the app reads its shared usage cache and requests background refreshes through authenticated local control. When stopped, the app performs standalone usage reads. The backend launches the official CLI's stdio app-server and calls only `initialize` and `account/rateLimits/read`. It never creates a thread, sends model input, purchases credits, or consumes reset credits. This integration remains subject to CLI changes.
 
 - Remaining percentage is `100 - usedPercent`, clamped to 0–100.
 - The overview shows **Weekly left**, matched by a reported seven-day window rather than plan price or primary/secondary position. A missing weekly window displays an em dash. With multiple buckets, only the explicitly named `codex` bucket supplies the summary.
@@ -51,9 +51,9 @@ The app launches the official CLI's stdio app-server and calls only `initialize`
 - Distinct limit buckets stay separate; they are not summed into a fictional quota.
 - Window names reflect reported durations rather than assuming every account has identical limits.
 - Missing data is unavailable, never zero or unlimited.
-- Displayed usage stays in app memory with its last-check time. A failed refresh retains an explicitly out-of-date snapshot. Routing uses the backend's separate minute-by-minute checks; a failed check can use its last successful reading for at most five minutes, never across the reported reset time.
-- Click the refresh icon in Accounts or account details for a fresh display check. Opening the view requests usage when its last check is more than five minutes old. Usage refresh leaves the other controls available.
-- Presence of a local credential file does not prove that the login is valid; usage errors offer sign-in again.
+- The display and routing use the same backend snapshots while running. Failed, incomplete, or expired reports preserve the last valid reading, marked out of date. Positive readings become stale after five minutes or their reset time; unknown usage permits requests, while a confirmed reserve requires a valid new reading to clear. Snapshots are memory-only.
+- Click the refresh icon in Accounts or account details to refresh the shared backend readings. The request returns immediately while checks run in the background; the app polls the shared result every ten seconds. Opening the view requests usage when its last refresh is more than five minutes old. Usage refresh leaves the other controls available.
+- Presence of a local credential file does not prove that the login is valid. Fetch failures report usage as unavailable without assuming an authentication problem. Only confirmed missing-login errors recommend signing in. `usage-status --json` exposes safe error categories, attempt/success times, consecutive failures, and the next retry time.
 
 ## Desktop compatibility
 

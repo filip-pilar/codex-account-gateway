@@ -29,6 +29,8 @@ final class AutomaticRunTests: XCTestCase {
         }
         var policy = AutomaticRun(enabled: true, paused: false)
         XCTAssertNotNil(policy.attention(for: routing("weekly_reserve_reached")))
+        XCTAssertNil(policy.attention(for: routing("usage_degraded")))
+        XCTAssertNotNil(policy.attention(for: routing("weekly_reserve_reached")))
         XCTAssertNil(policy.attention(for: routing("weekly_reserve_reached")))
         XCTAssertNil(policy.attention(for: nil))
         XCTAssertNil(policy.attention(for: routing("weekly_reserve_reached")))

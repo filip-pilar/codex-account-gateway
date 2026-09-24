@@ -19,10 +19,11 @@ struct Reply: Decodable {
     let client_dir: String?
     let url: String?
     let routing: Routing?
+    let usage_status: UsageStatus?
     let global: GlobalProvider?
     struct AddedAccount: Decodable { let id: String }
     struct GlobalProvider: Decodable { let enabled: Bool; let port: Int?; let needs_update: Bool? }
-    enum CodingKeys: String, CodingKey { case ok, code, accounts, account, config, launch_command, client_dir, url, routing, global }
+    enum CodingKeys: String, CodingKey { case ok, code, accounts, account, config, launch_command, client_dir, url, routing, usage_status, global }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         ok = try c.decode(Bool.self, forKey: .ok)
@@ -34,6 +35,7 @@ struct Reply: Decodable {
         client_dir = try c.decodeIfPresent(String.self, forKey: .client_dir)
         url = try c.decodeIfPresent(String.self, forKey: .url)
         routing = try c.decodeIfPresent(Routing.self, forKey: .routing)
+        usage_status = try c.decodeIfPresent(UsageStatus.self, forKey: .usage_status)
         global = try c.decodeIfPresent(GlobalProvider.self, forKey: .global)
     }
 }
@@ -144,19 +146,41 @@ func shellQuote(_ value: String) -> String { "'" + value.replacingOccurrences(of
         if isDemo { loadDemo(); return }
         await poll()
         guard !checkingUsage, includeUsage || Date().timeIntervalSince(lastUsageRefresh) > 300 else { return }
+        if running {
+            do {
+                let reply = try await backend.reply(["usage-status", "--refresh"])
+                guard reply.ok, let usage = reply.usage_status else { throw GatewayFailure(code: reply.code) }
+                applyUsage(usage)
+                routing = reply.routing
+                lastUsageRefresh = Date()
+            } catch { report(error) }
+            return
+        }
         checkingUsage = true; defer { checkingUsage = false }
         for account in accounts where account.authenticated {
             refreshingAccount = account.id
             do {
                 let data = try await backend.run(["usage", "--account", account.id])
+                if running { break }
                 let reply = try JSONDecoder().decode(Reply.self, from: data)
                 guard reply.ok else { throw GatewayFailure(code: reply.code) }
                 usages[account.id] = try JSONDecoder().decode(Usage.self, from: data)
                 usageErrors[account.id] = nil
-            } catch { usageErrors[account.id] = readable(error) }
+            } catch { if !running { usageErrors[account.id] = readable(error) } }
         }
         refreshingAccount = nil
         lastUsageRefresh = Date()
+    }
+
+    private func applyUsage(_ status: UsageStatus) {
+        checkingUsage = status.checking
+        usages = Dictionary(uniqueKeysWithValues: status.accounts.compactMap { snapshot in
+            snapshot.usage.map { (snapshot.account, $0) }
+        })
+        usageErrors = Dictionary(uniqueKeysWithValues: status.accounts.compactMap { snapshot in
+            guard accounts.contains(where: { $0.id == snapshot.account && $0.authenticated }) else { return nil }
+            return snapshot.notice.map { (snapshot.account, $0) }
+        })
     }
 
     private func poll() async {
@@ -171,6 +195,14 @@ func shellQuote(_ value: String) -> String { "'" + value.replacingOccurrences(of
             guard listing.ok else { throw GatewayFailure(code: listing.code) }
             let previous = Set(accounts.filter(\.authenticated).map(\.id))
             accounts = listing.accounts ?? []
+            if running {
+                let usage = try await backend.reply(["usage-status"])
+                guard usage.ok, let snapshot = usage.usage_status else { throw GatewayFailure(code: usage.code) }
+                applyUsage(snapshot)
+                routing = usage.routing
+            } else {
+                checkingUsage = refreshingAccount != nil
+            }
             let global = try await backend.reply(["global-status"])
             guard global.ok else { throw GatewayFailure(code: global.code) }
             globalEnabled = global.global?.enabled ?? false
@@ -338,7 +370,8 @@ func shellQuote(_ value: String) -> String { "'" + value.replacingOccurrences(of
         case "cli_unavailable": return "Install the official Codex CLI, then try again."
         case "node_unavailable": return "Node.js 22.15 or newer is required."
         case "usage_timeout": return "Usage check timed out. Try refreshing later."
-        case "usage_unavailable": return "Usage unavailable. Try signing in again."
+        case "usage_unavailable": return "Usage unavailable. Try refreshing later."
+        case "usage_status_unavailable": return "Gateway usage status is unavailable. Restart the gateway to load the updated backend."
         case "port_in_use": return "Port 8787 is occupied. Stop the other service before starting."
         case "client_directory_exists": return "Choose a new folder name; that folder already exists."
         case "unsafe_client_directory": return "Choose a new folder outside gateway and existing Codex state."

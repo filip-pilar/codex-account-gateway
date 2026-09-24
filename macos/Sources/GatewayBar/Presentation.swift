@@ -14,6 +14,8 @@ struct GatewayStatus {
                 title = "Paused"; notice = "No account has more than 5% weekly usage left."; tone = .caution
             case "usage_unavailable":
                 title = "Paused"; notice = "Weekly usage unavailable. Retrying automatically."; tone = .caution
+            case "usage_degraded":
+                title = "Ready"; notice = "Usage unavailable; requests continuing."; tone = .caution
             case "login_required":
                 title = "Paused"; notice = "Sign in to resume routing."; tone = .caution
             case "ready":
@@ -40,12 +42,12 @@ struct AccountStatus {
     init(account: Account, weekly: UsageWindow?, usageError: Bool) {
         if !account.authenticated {
             title = "Sign in required"; tone = .neutral; canSelect = false
-        } else if usageError {
-            title = "Usage out of date"; tone = .caution; canSelect = false
         } else if let weekly, weekly.remaining_percent <= 5 {
             title = "Weekly reserve reached"; tone = .caution; canSelect = false
+        } else if usageError {
+            title = "Usage out of date"; tone = .caution; canSelect = !account.selected
         } else if weekly == nil {
-            title = "Usage unavailable"; tone = .neutral; canSelect = false
+            title = "Usage unavailable"; tone = .neutral; canSelect = !account.selected
         } else {
             title = account.selected ? "Selected" : "Available"
             tone = account.selected ? .positive : .neutral

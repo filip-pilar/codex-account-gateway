@@ -6,13 +6,27 @@ import { timingSafeEqual } from 'node:crypto';
 const headersToForward = ['content-type','content-encoding','accept','user-agent','openai-beta','originator','session_id','conversation_id','session-id','thread-id','x-codex-routing-hint','x-codex-turn-state','x-codex-turn-metadata','x-openai-internal-codex-responses-lite','x-codex-image-turn-id'];
 const routes = new Map(['/responses','/alpha/search','/images/generations','/images/edits'].map(p => ['/v1'+p, 'https://chatgpt.com/backend-api/codex'+p]));
 const equal = (a,b) => typeof a === 'string' && Buffer.byteLength(a) === Buffer.byteLength(b) && timingSafeEqual(Buffer.from(a),Buffer.from(b));
-export async function startServer({port=8787, credentials, transport=fetch, controlToken, instanceId = 'fixture', onStop=()=>{}, onSelect=null, routingStatus=()=>undefined, maxBytes=16*1024*1024, timeoutMs=240000}) {
+export async function startServer({port=8787, credentials, transport=fetch, controlToken, instanceId = 'fixture', onStop=()=>{}, onSelect=null, routingStatus=()=>undefined, usageStatus=null, refreshUsage=null, maxBytes=16*1024*1024, timeoutMs=240000}) {
   const active = new Set();
   let selecting = false;
   const server = http.createServer(async (req,res) => {
     const fail = (status, code) => { if (res.destroyed || res.writableEnded) return; if(!res.headersSent) res.writeHead(status, {'content-type':'application/json','cache-control':'no-store'}); res.end(JSON.stringify({error:{type:'codex_gateway_error',message:code}})); };
     if(req.headers.origin || req.headers.host !== `127.0.0.1:${server.address()?.port}`) return fail(403,'local_client_required');
     if(req.url === '/health' && req.method === 'GET') { res.setHeader('content-type','application/json'); return res.end(JSON.stringify({service:'codex-gateway',version:'0.1.0'})); }
+    if (req.url === '/control/usage' && ['GET', 'POST'].includes(req.method)) {
+      if (!controlToken || !equal(req.headers.authorization, `Bearer ${controlToken}`)) return fail(403, 'invalid_control_token');
+      if (!usageStatus || !refreshUsage) return fail(501, 'usage_status_unavailable');
+      try {
+        if (req.method === 'POST') void refreshUsage();
+        const usage = await usageStatus();
+        const body = JSON.stringify({ instanceId, usage_status: usage, routing: routingStatus() });
+        if (Buffer.byteLength(body) > 1024 * 1024) return fail(503, 'usage_status_unavailable');
+        res.setHeader('content-type', 'application/json');
+        res.setHeader('cache-control', 'no-store');
+        res.end(body);
+      } catch { fail(503, 'usage_status_unavailable'); }
+      return;
+    }
     if ((req.url === '/control/stop' && req.method === 'POST') || (req.url === '/control/status' && req.method === 'GET')) {
       if(!controlToken || !equal(req.headers.authorization,`Bearer ${controlToken}`)) return fail(403,'invalid_control_token');
       res.setHeader('content-type', 'application/json');

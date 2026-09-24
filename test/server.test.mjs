@@ -73,6 +73,27 @@ test('control endpoint requires its private token',async()=>{
   try{const url=`http://127.0.0.1:${s.port}/control/stop`;assert.equal((await fetch(url,{method:'POST'})).status,403);assert.equal(stopped,false);const r=await fetch(url,{method:'POST',headers:{authorization:'Bearer test-token'}});await r.text();assert.equal(r.status,200);await new Promise(setImmediate);assert.equal(stopped,true);}finally{await s.close();}
 });
 
+test('shared usage reads require control auth and refresh returns while polling is pending', async () => {
+  let refreshes = 0;
+  const s = await startServer({ port: 0, credentials: auth, controlToken: 'fixture-control',
+    usageStatus: async () => ({ checking: refreshes > 0, accounts: [] }),
+    refreshUsage: () => { refreshes++; return new Promise(() => {}); } });
+  const url = `http://127.0.0.1:${s.port}/control/usage`;
+  try {
+    for (const method of ['GET', 'POST']) assert.equal((await fetch(url, { method })).status, 403);
+    assert.equal(refreshes, 0);
+    const headers = { authorization: 'Bearer fixture-control' };
+    const initial = await fetch(url, { headers });
+    assert.equal((await initial.json()).usage_status.checking, false);
+    assert.equal(refreshes, 0);
+    const refreshed = await fetch(url, { method: 'POST', headers, signal: AbortSignal.timeout(1000) });
+    assert.equal(refreshed.status, 200);
+    assert.equal((await refreshed.json()).usage_status.checking, true);
+    assert.equal(refreshes, 1);
+    assert.equal((await fetch(url, { headers: { ...headers, origin: 'https://example.test' } })).status, 403);
+  } finally { await s.close(); }
+});
+
 test('deadline closes a stalled upload without forwarding', async()=>{
   const {default:http}=await import('node:http');let calls=0;
   const s=await startServer({port:0,credentials:auth,timeoutMs:80,transport:async()=>{calls++;return new Response('');}});

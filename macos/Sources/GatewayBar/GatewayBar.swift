@@ -415,7 +415,7 @@ struct GatewayView: View {
                         if account.authenticated {
                             Button("Use This Account") { Task { await model.action(["account-select", "--account", id]) } }
                                 .buttonStyle(.borderedProminent).disabled(model.busy || !state.canSelect)
-                                .help(state.canSelect ? "Use this account for future requests" : "Fresh weekly usage above 5% is required")
+                                .help(state.canSelect ? "Use this account for future requests" : "This account has reached the weekly reserve")
                         } else {
                             Button("Sign In…") { model.login(account) }
                                 .buttonStyle(.borderedProminent).disabled(model.busy)

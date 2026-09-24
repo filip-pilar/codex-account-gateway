@@ -2,6 +2,15 @@ import XCTest
 @testable import GatewayBar
 
 final class UsageTests: XCTestCase {
+    func testSharedUsageDecodesRetainedReadingsAndDoesNotMisdiagnoseFetchFailuresAsLoginFailures() throws {
+        let json = #"{"ok":true,"code":"usage_status","usage_status":{"checking":false,"next_check_at":null,"accounts":[{"account":"default","checked_at":"2026-09-24T10:30:00Z","buckets":[{"id":"codex","primary":{"remaining_percent":80,"window_minutes":10080,"resets_at":null}}],"stale":true,"diagnostics":{"last_attempt_at":"2026-09-24T10:31:00Z","last_success_at":"2026-09-24T10:30:00Z","last_error":"rpc_error","consecutive_failures":1}}]}}"#
+        let reply = try JSONDecoder().decode(Reply.self, from: Data(json.utf8))
+        let snapshot = try XCTUnwrap(reply.usage_status?.accounts.first)
+        XCTAssertEqual(snapshot.usage?.weeklyWindow?.remaining_percent, 80)
+        XCTAssertEqual(snapshot.notice, "Usage check failed. Retrying automatically.")
+        XCTAssertEqual(snapshot.diagnostics.consecutive_failures, 1)
+        XCTAssertTrue(snapshot.stale)
+    }
     func testCheckTimeAcceptsBackendFractionalSeconds() {
         for timestamp in ["2026-09-24T10:30:00.123Z", "2026-09-24T10:30:00Z"] {
             XCTAssertNotEqual(Usage(checked_at: timestamp, buckets: []).checkedText, "Last check unknown")

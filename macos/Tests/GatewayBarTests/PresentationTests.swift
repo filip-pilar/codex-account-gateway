@@ -20,6 +20,8 @@ final class PresentationTests: XCTestCase {
         XCTAssertNil(status("ready").notice)
         XCTAssertNil(status("checking_usage").notice)
         XCTAssertEqual(status("checking_usage").tone, .neutral)
+        XCTAssertEqual(status("usage_degraded").title, "Ready")
+        XCTAssertEqual(status("usage_degraded").notice, "Usage unavailable; requests continuing.")
         for state in ["weekly_reserve_reached", "usage_unavailable", "login_required"] {
             XCTAssertEqual(status(state).title, "Paused")
             XCTAssertEqual(status(state).tone, .caution)
@@ -29,19 +31,21 @@ final class PresentationTests: XCTestCase {
         XCTAssertEqual(GatewayStatus(state: "stale", routing: nil).title, "Stopped")
     }
 
-    func testAccountSelectionRequiresFreshUsageAboveTheReserve() {
+    func testUnknownUsageAllowsSelectionButConfirmedReserveAndMissingLoginStillBlock() {
         let account = Account(id: "second", label: "Work", selected: false, authenticated: true)
         func status(_ remaining: Double?, error: Bool = false) -> AccountStatus {
             AccountStatus(account: account, weekly: remaining.map { UsageWindow(remaining_percent: $0, window_minutes: 10080, resets_at: nil) }, usageError: error)
         }
-        XCTAssertFalse(status(nil).canSelect)
+        XCTAssertTrue(status(nil).canSelect)
         XCTAssertFalse(status(0).canSelect)
         XCTAssertFalse(status(5).canSelect)
-        XCTAssertFalse(status(91, error: true).canSelect)
+        XCTAssertTrue(status(91, error: true).canSelect)
+        XCTAssertFalse(status(5, error: true).canSelect)
         XCTAssertTrue(status(5.1).canSelect)
         XCTAssertEqual(status(0).title, "Weekly reserve reached")
         let signedOut = Account(id: "third", label: "Extra", selected: false, authenticated: false)
         XCTAssertEqual(AccountStatus(account: signedOut, weekly: nil, usageError: false).title, "Sign in required")
+        XCTAssertFalse(AccountStatus(account: signedOut, weekly: nil, usageError: true).canSelect)
     }
 
     @MainActor func testDemoActionsCannotChangeTheLiveGatewayOrStartupPreferences() async {
