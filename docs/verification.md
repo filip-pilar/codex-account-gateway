@@ -4,6 +4,8 @@
 
 Run `npm run check` for credential-free gateway fixtures. They use disposable profiles, a fake `codex` executable, and synthetic loopback transports. They cover lifecycle, forwarding, cancellation, account isolation, usage parsing, and automatic switching. For the native app, run `npm run build:macos` and `swift test --package-path macos`; quit and reopen the app after rebuilding.
 
+Native HTTP loopback fixtures cover image-heavy payloads above 16 MiB in identity, gzip, and zstd form; large turn-state headers; compressed response bytes; compaction and query forwarding; upstream context/rate-limit errors; chunked size rejection; and uploads/streams that outlive the idle timeout while making progress. Stalled streams, shutdown, cancellation, and redirect refusal are also checked. Profile limit overrides and upgrades of older managed provider blocks use disposable files. These checks do not establish live upstream support for any particular request.
+
 For an installed profile, `doctor --json` and `status --json` check local readiness. Credential presence and a running gateway do not prove upstream access.
 
 ## Desktop route evidence and limits

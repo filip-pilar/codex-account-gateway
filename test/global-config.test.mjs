@@ -42,7 +42,7 @@ test('global provider toggle refuses ambiguous or edited configuration', () => {
   assert.throws(() => changeGlobalConfig('model_provider = "codex-gateway"\n', true, 8787), { code: 'global_config_conflict' });
   assert.throws(() => changeGlobalConfig('[model_providers.codex-gateway]\nname = "Other"\n', true, 8787), { code: 'global_config_conflict' });
   const enabled = changeGlobalConfig('model = "gpt-6-sol"\n', true, 8787);
-  assert.throws(() => changeGlobalConfig(enabled.replace('request_max_retries = 0', 'request_max_retries = 9'), false), { code: 'global_config_conflict' });
+  assert.throws(() => changeGlobalConfig(enabled.replace('wire_api = "responses"', 'wire_api = "chat"'), false), { code: 'global_config_conflict' });
 });
 
 test('global config update preserves private permissions and supports reversal', async () => {
@@ -85,7 +85,7 @@ test('a conflict in either route leaves the entire config untouched', async () =
     const enabled = changeGlobalConfig('model = "fixture"\n', true, 8787);
     for (const changed of [
       enabled.replace('openai_base_url = "http://127.0.0.1:8787/v1"', 'openai_base_url = "https://other.test/v1"'),
-      enabled.replace('request_max_retries = 0', 'request_max_retries = 9'),
+      enabled.replace('wire_api = "responses"', 'wire_api = "chat"'),
     ]) {
       await writeFile(path, changed, { mode: 0o600 });
       await assert.rejects(setGlobalConfig(false, undefined, path));
@@ -114,4 +114,19 @@ test('legacy CLI names share the same connection switch and preserve response co
     assert.equal((await run('openai-route-disable')).route.enabled, false);
     assert.equal(await readFile(path, 'utf8'), source);
   } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test('legacy restrictive provider defaults upgrade atomically and remain reversible', () => {
+  const source = 'model = "fixture"\nmodel_reasoning_effort = "high"\n';
+  const current = changeGlobalConfig(source, true, 8787);
+  for (const auth of [true, false]) {
+    const legacy = current.replace('requires_openai_auth = true', `requires_openai_auth = ${auth}`)
+      .replace('# codex-gateway: provider definition end',
+        'request_max_retries = 0\nstream_max_retries = 0\nstream_idle_timeout_ms = 240000\n# codex-gateway: provider definition end');
+    assert.equal(globalConfigState(legacy).needs_update, true);
+    assert.equal(changeGlobalConfig(legacy, true, 8787), current);
+    assert.equal(changeGlobalConfig(legacy, false), source);
+    assert.throws(() => changeGlobalConfig(legacy.replace('stream_idle_timeout_ms = 240000', 'stream_idle_timeout_ms = 99'), true, 8787), { code: 'global_config_conflict' });
+  }
+  assert.doesNotMatch(current, /request_max_retries|stream_max_retries|stream_idle_timeout_ms/);
 });

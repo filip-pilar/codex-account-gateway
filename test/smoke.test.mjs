@@ -6,13 +6,14 @@ import { promisify } from 'node:util';
 import { mkdtemp, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { buffer } from 'node:stream/consumers';
 import { startServer } from '../src/server.mjs';
 import { writePrivate } from '../src/state.mjs';
 const run=promisify(execFile),script=fileURLToPath(new URL('../scripts/smoke-live.mjs',import.meta.url));
 test('smoke requires opt-in and performs exactly one bounded request against a local fixture',async()=>{
   const root=await realpath(await mkdtemp(join(tmpdir(),'gateway-smoke-')));let calls=0, mode='ok';
   const s=await startServer({port:0,controlToken:'b'.repeat(64),instanceId:'a'.repeat(32),credentials:async()=>({token:'fixture',account:'fixture'}),transport:async(u,o)=>{
-    calls++;const body=JSON.parse(o.body);assert.equal(body.reasoning.effort,'low');assert.equal(body.tools,undefined);assert.equal(body.stream,true);
+    calls++;const body=JSON.parse(await buffer(o.body));assert.equal(body.reasoning.effort,'low');assert.equal(body.tools,undefined);assert.equal(body.stream,true);
     if(mode==='reject')return new Response('PRIVATE',{status:401});
     return new Response('data: {"type":"response.output_text.delta","delta":"PRIVATE"}\n\n'+(mode==='ok'?'data: {"type":"response.completed"}\n\n':''));
   }});

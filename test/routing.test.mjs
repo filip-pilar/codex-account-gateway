@@ -4,6 +4,7 @@ import { mkdtemp, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
+import { buffer } from 'node:stream/consumers';
 import { addAccount, accountRoot, selectedAccount } from '../src/accounts.mjs';
 import { ensureState, writePrivate } from '../src/state.mjs';
 import { createRouter, weeklyWindow } from '../src/routing.mjs';
@@ -61,7 +62,7 @@ test('new requests switch while an existing stream keeps its original credential
   const server = await startServer({ port: 0, credentials: router.credentials, routingStatus: router.status,
     transport: async (_url, options) => {
       seen.push({ token: options.headers.get('authorization'), account: options.headers.get('chatgpt-account-id') });
-      assert.deepEqual(options.body, bytes);
+      assert.deepEqual(await buffer(options.body), bytes);
       assert.equal(options.headers.get('x-codex-turn-state'), 'opaque-turn-fixture');
       if (seen.length === 1) {
         began.resolve();

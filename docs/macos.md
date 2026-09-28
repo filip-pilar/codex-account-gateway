@@ -25,6 +25,8 @@ The overview fits the account list and shows gateway status in its header. Accou
 
 The default backing state is `~/.local/share/codex-gateway`; `CODEX_GATEWAY_HOME` can select an alternative root when launching the app. Client configuration must stay separate from backing state. Existing client folders are never overwritten.
 
+Large conversations stream through the backend without local decompression or JSON-depth limits. Transport limits can be changed in the profile's private `limits.json`; see [transport limits](cli.md#transport-limits). Restart the gateway after changing them. **Update Connection** also upgrades exact older managed provider definitions to the client's retry and idle-timeout defaults; restart Codex after that update.
+
 ## Additional accounts
 
 Click **Add Account…**, enter a label, and complete that account's official login in Terminal. Choose the intended account in the browser; profiles isolate credentials, but do not force your browser to choose a different login automatically. Click **Check Sign-in**. Signed-in accounts join the pool automatically. A checkmark and blue highlight identify the selected account; routine status stays in the header, and notices appear only when attention is needed. Clicking a row opens its details; **Use This Account** explicitly changes selection. Accounts with unknown usage can be manually selected. Accounts at a confirmed weekly reserve cannot be selected until a valid reading clears it. Use **Rename…** in details to change any account label.

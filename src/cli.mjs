@@ -11,6 +11,7 @@ import { startServer } from './server.mjs';
 import { selectedAccount, getAccount, listAccounts, addAccount, renameAccount, selectAccount } from './accounts.mjs';
 import { readUsage } from './usage.mjs';
 import { createRouter } from './routing.mjs';
+import { readLimits } from './limits.mjs';
 import { gatewayProvider, readGlobalConfig, setGlobalConfig } from './global-config.mjs';
 
 const [command = 'help', ...args] = process.argv.slice(2);
@@ -137,7 +138,9 @@ async function inspect() {
   const r = await saved();
   if (!r) return { state: 'stopped' };
   const control = await probe(r);
-  if (control) return { state: 'running', port: r.port, pid: r.pid, url: `http://127.0.0.1:${r.port}/v1`, ...(control.routing ? { routing: control.routing } : {}) };
+  if (control) return { state: 'running', port: r.port, pid: r.pid, url: `http://127.0.0.1:${r.port}/v1`,
+    ...(control.routing ? { routing: control.routing } : {}),
+    ...(control.limits ? { limits: control.limits, active_requests: control.active_requests } : {}) };
   return { state: alive(r.pid) ? 'unavailable' : 'stale', port: r.port, pid: r.pid };
 }
 // Serialize short runtime mutations. An interrupted mutation fails closed rather than
@@ -176,8 +179,6 @@ async function cliVersion() {
 function config(model, port) {
   return `model = ${JSON.stringify(model)}
 model_provider = "codex-gateway"
-model_reasoning_effort = "low"
-check_for_update_on_startup = false
 
 ${gatewayProvider(port)}`;
 }
@@ -228,6 +229,7 @@ async function start(opts, port) {
       await unlink(runtime);
     }
     if (!(await listAccounts(root)).some(account => account.authenticated)) throw error('login_required', 'Isolated credentials are missing or unsafe.', 'login');
+    const limits = await readLimits(root);
     const r = { pid: process.pid, port, instanceId: randomBytes(16).toString('hex'), controlToken: randomBytes(32).toString('hex') };
     let server, stopping;
     const router = createRouter({ root, select: id => locked(() => selectAccount(root, id)) });
@@ -236,6 +238,7 @@ async function start(opts, port) {
       await clearOwned(r.instanceId);
     })().catch(() => { process.exitCode = 1; });
     server = await startServer({ port, credentials: router.credentials, onSelect: router.select,
+      maxBytes: limits.max_request_bytes, timeoutMs: limits.idle_timeout_ms, maxHeaderBytes: limits.max_header_bytes,
       usageStatus: router.usageStatus, refreshUsage: router.refresh,
       routingStatus: router.status, controlToken: r.controlToken, instanceId: r.instanceId, onStop: stop });
     try { await writePrivate(runtime, JSON.stringify(r)); } catch (e) { await server.close(); await router.close(); throw e; }
@@ -320,6 +323,8 @@ CODEX_GATEWAY_HOME selects private state. The global and openai-route commands e
     return output({ ok: true, code: 'login_completed' });
   }
   if (command === 'doctor') {
+    let limits, limits_error;
+    try { limits = await readLimits(root); } catch (error) { limits_error = error.code; }
     const version = await cliVersion();
     let credentials = 'missing_or_unsafe';
     try { if ((await listAccounts(root)).some(account => account.authenticated)) credentials = 'present'; } catch {}
@@ -329,8 +334,8 @@ CODEX_GATEWAY_HOME selects private state. The global and openai-route commands e
     const available = await portAvailable(selectedPort);
     const node = process.versions.node;
     const supported = Number(node.split('.')[0]) > 22 || Number(node.split('.')[0]) === 22 && Number(node.split('.')[1]) >= 15;
-    const ok = lifecycle_lock === 'absent' && supported && !!version && credentials === 'present' && ['running', 'stopped', 'stale'].includes(status.state) && (available || status.state === 'running' && status.port === selectedPort);
-    output({ ok, code: ok ? 'local_ready' : 'local_not_ready', profile: root, node: { version: node, supported }, cli: { version, historical_baseline: '0.149.1', matches_baseline: version === '0.149.1' }, credentials, runtime: status, lifecycle_lock, port: { number: selectedPort, available }, upstream: 'not_checked', next_action: lifecycle_lock !== 'absent' ? 'inspect_private_state' : !version ? 'install_official_cli' : credentials !== 'present' ? 'login' : !ok ? 'inspect_local_checks' : status.state !== 'running' ? 'start' : null });
+    const ok = !limits_error && lifecycle_lock === 'absent' && supported && !!version && credentials === 'present' && ['running', 'stopped', 'stale'].includes(status.state) && (available || status.state === 'running' && status.port === selectedPort);
+    output({ ok, code: ok ? 'local_ready' : 'local_not_ready', profile: root, node: { version: node, supported }, cli: { version, historical_baseline: '0.149.1', matches_baseline: version === '0.149.1' }, credentials, runtime: status, limits, limits_error, lifecycle_lock, port: { number: selectedPort, available }, upstream: 'not_checked', next_action: limits_error || lifecycle_lock !== 'absent' ? 'inspect_private_state' : !version ? 'install_official_cli' : credentials !== 'present' ? 'login' : !ok ? 'inspect_local_checks' : status.state !== 'running' ? 'start' : null });
     if (!ok) process.exitCode = 1;
     return;
   }

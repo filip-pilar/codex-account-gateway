@@ -51,6 +51,7 @@ Exit 0: requested operation succeeded. Exit 1: operational failure or unmet read
 | `start_timeout`, `start_failed`, `stop_timeout` | Inspect status/doctor before retrying |
 | `invalid_arguments` | Correct invocation using this reference |
 | `permission_denied`, `path_missing`, `operation_failed` | Inspect local paths/permissions; do not dump private files |
+| `invalid_limits` | Correct the private profile's `limits.json`; see transport limits below |
 | `openai_route_conflict` | Inspect the user-level config; an existing override or changed managed block was left untouched |
 
 `doctor` includes `profile`, Node support/version, parsed CLI version and historical-baseline match, credential presence, runtime state, lifecycle lock presence, selected port availability, and `next_action`. A different CLI version is reported, not blocked: it is unverified rather than necessarily incompatible. A present or unsafe lifecycle lock makes local readiness fail and requests private-state inspection; the diagnostic never removes it. A free port check is advisory; `start` is the authoritative bind check. `doctor` does not establish that gateway/client configuration match.
@@ -66,6 +67,22 @@ Both settings are validated and written atomically in `~/.codex/config.toml`. Ed
 The older `openai-route-*` commands are aliases for these same operations, retaining their JSON response codes and `route` field. They no longer toggle a separate setting.
 
 The gateway serves HTTP streaming. WebSocket handshakes receive HTTP 426 so compatible Codex engines switch to HTTP immediately. See [verification](verification.md) for tested scope.
+
+Generated provider definitions inherit Codex's retry and stream-idle defaults; the gateway itself never retries inference. New isolated clients also inherit reasoning and update-check defaults. An exact older managed provider block that disabled retries or set a four-minute stream-idle timeout appears as `needs_update: true`; `global-enable` upgrades that block while preserving other configuration. Restart Codex to load the change. Edited blocks still require manual inspection. Separately created client folders are never rewritten.
+
+## Transport limits
+
+Inference bodies are streamed without buffering, decompression, JSON parsing, or local schema validation. `/v1/responses/compact` is forwarded alongside Responses, image, and search requests. Query strings, compressed bytes, multipart bodies, and non-streaming responses are supported. Upstream errors retain their status and body so the client can recognize context exhaustion, authentication failures, and rate limits. Bodies and turn-state values are never logged or saved by the gateway.
+
+The default limits are 256 MiB of **wire bytes** per request, 1 MiB of request/response headers, and 15 minutes without upload/response progress. Active uploads and responses may run longer than 15 minutes. There is no decoded-size or nesting-depth cap because the gateway does not decode conversations. A wire-size rejection returns HTTP 413 with `error.code` and `error.message` equal to `request_too_large`; an idle request returns HTTP 504 / `upstream_timeout` before response headers, or closes an already-started stream. A chunked upload crossing the cap is aborted upstream and never replayed. Upstream and client limits still apply independently.
+
+For larger requests or longer idle periods, create a private (mode 600), non-symlink `limits.json` in the backing state root (`~/.local/share/codex-gateway` by default):
+
+```json
+{"max_request_bytes":536870912,"idle_timeout_ms":1800000,"max_header_bytes":1048576}
+```
+
+All fields are optional and must be positive safe integers; unknown fields are rejected. Idle timeout and header size must fit a signed 32-bit integer. Zero does not disable a limit. The CLI and Mac app read this file when starting the backend, so stop/start the gateway after editing it. `doctor --json` reports configured `limits` or `limits_error`; `status --json` reports the running instance's effective `limits` and `active_requests`. A running older backend may omit these additive fields. HTTP headers must arrive within 60 seconds; stalled local control operations retain their separate short deadlines.
 
 ## Conservative recovery
 

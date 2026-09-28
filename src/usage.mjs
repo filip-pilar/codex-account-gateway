@@ -15,8 +15,8 @@ function window(value) {
 export function normalizeUsage(result) {
   const buckets = result?.rateLimitsByLimitId;
   const source = buckets && Object.keys(buckets).length ? Object.entries(buckets) : [['codex', result?.rateLimits]];
-  return source.filter(([, value]) => value && typeof value === 'object').slice(0, 32).map(([id, value]) => ({
-    id: String(id).slice(0, 100),
+  return source.filter(([, value]) => value && typeof value === 'object').map(([id, value]) => ({
+    id,
     primary: window(value.primary), secondary: window(value.secondary),
   }));
 }

@@ -107,7 +107,7 @@ test('setup requires a model and creates only a new isolated private client', ()
   const printed=await run(['setup','--model','fixture-model','--json']);assert.match(printed.value.config,/model = "fixture-model"/);await assert.rejects(access(root));
   const dir=join(base,"client's profile");const made=await run(['setup','--model','fixture-model','--client-dir',dir,'--json']);assert.equal(made.value.code,'configuration_created');
   assert.equal((await stat(dir)).mode & 0o777,0o700);assert.equal((await stat(join(dir,'config.toml'))).mode & 0o777,0o600);
-  const original=await readFile(join(dir,'config.toml'),'utf8');assert.match(original,/model_reasoning_effort = "low"/);assert.match(original,/check_for_update_on_startup = false/);
+  const original=await readFile(join(dir,'config.toml'),'utf8');assert.doesNotMatch(original,/model_reasoning_effort|check_for_update_on_startup|request_max_retries|stream_max_retries|stream_idle_timeout_ms/);
   assert.equal(made.value.launch.env.CODEX_HOME,dir);assert.deepEqual(made.value.launch.unset_env,['OPENAI_API_KEY','CODEX_API_KEY','OPENAI_BASE_URL']);
   assert.equal((await run(['setup','--model','other','--client-dir',dir,'--json'])).value.code,'client_directory_exists');assert.equal(await readFile(join(dir,'config.toml'),'utf8'),original);
   assert.equal((await run(['setup','--model','fixture','--client-dir',join(root,'codex'),'--json'])).value.code,'unsafe_client_directory');
@@ -228,7 +228,7 @@ for (const mode of ['oversized', 'redirect', 'stalled']) {
   }));
 }
 
-test('account CLI switches request credentials without changing the gateway address or process', () => fixture(async ({ run, auth, root, base, freePort }) => {
+test('account CLI switches request credentials without changing the gateway address or process', t => fixture(async ({ run, auth, root, base, freePort }) => {
   await auth();
   const added = await run(['account-add', '--label', 'Second', '--json']);
   assert.equal(added.value.code, 'account_added');
@@ -239,15 +239,24 @@ test('account CLI switches request credentials without changing the gateway addr
 
   // Replace only the child gateway's upstream transport. All CLI, account-state,
   // control, and forwarding code stays real; no request can reach a service.
+  const upstream = http.createServer((req, res) => {
+    req.resume();
+    req.on('end', () => {
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ authorization: req.headers.authorization, account: req.headers['chatgpt-account-id'] }));
+    });
+  });
+  upstream.listen(0, '127.0.0.1'); await once(upstream, 'listening');
+  t.after(() => { upstream.closeAllConnections(); return new Promise(resolve => upstream.close(resolve)); });
   const transport = join(base, 'fixture-transport.mjs');
   await writeFile(transport, `
-globalThis.fetch = async (url, options) => {
+import https from 'node:https';
+import http from 'node:http';
+https.request = (url, options, listener) => {
   if (url !== 'https://chatgpt.com/backend-api/codex/responses') throw new Error('Unexpected fixture route');
-  return Response.json({
-    authorization: options.headers.get('authorization'),
-    account: options.headers.get('chatgpt-account-id'),
-  });
+  return http.request('http://127.0.0.1:${upstream.address().port}/fixture', options, listener);
 };
+globalThis.fetch = () => { throw new Error('Unexpected external fetch in CLI fixture'); };
 `);
   const started = await run(['start', '--background', '--port', String(await freePort()), '--json'], {
     NODE_OPTIONS: `--import=${pathToFileURL(transport).href}`,
@@ -342,4 +351,21 @@ test('shared usage CLI reports cached routing readings, refreshes them, and reta
   const recovered = await settled();
   assert.equal(recovered.routing.state, 'ready');
   assert.equal(recovered.usage_status.accounts[0].diagnostics.last_error, null);
+}));
+
+test('CLI reports configured and effective limits and rejects invalid profiles', { timeout: 20000 }, () => fixture(async ({ run, root, auth, freePort }) => {
+  await auth();
+  const path = join(root, 'limits.json');
+  const limits = { max_request_bytes: 1024, idle_timeout_ms: 5000, max_header_bytes: 65536 };
+  await writeFile(path, JSON.stringify(limits), { mode: 0o600 });
+  assert.deepEqual((await run(['doctor', '--json'])).value.limits, limits);
+  assert.equal((await run(['start', '--background', '--port', String(await freePort()), '--json'])).value.code, 'started');
+  const status = (await run(['status', '--json'])).value;
+  assert.deepEqual(status.limits, limits); assert.equal(status.active_requests, 0);
+  await writeFile(path, '{"idle_timeout_ms":0}');
+  assert.deepEqual((await run(['status', '--json'])).value.limits, limits, 'running settings remain unchanged until restart');
+  const doctor = (await run(['doctor', '--json'])).value;
+  assert.equal(doctor.code, 'local_not_ready'); assert.equal(doctor.limits_error, 'invalid_limits');
+  assert.equal((await run(['stop', '--json'])).value.code, 'stopped');
+  assert.equal((await run(['start', '--json'])).value.code, 'invalid_limits');
 }));

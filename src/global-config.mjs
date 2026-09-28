@@ -23,11 +23,13 @@ requires_openai_auth = ${requiresOpenAIAuth}
 supports_websockets = false
 supports_standalone_web_search = true
 http_headers = { "x-openai-actor-authorization" = "codex-gateway" }
-request_max_retries = 0
-stream_max_retries = 0
-stream_idle_timeout_ms = 240000
 `;
 }
+
+// Recognize only the exact old template, so upgrading managed defaults remains
+// reversible without accepting arbitrary edits to the provider block.
+const legacyProvider = (port, auth) => gatewayProvider(port, auth) +
+  'request_max_retries = 0\nstream_max_retries = 0\nstream_idle_timeout_ms = 240000\n';
 
 function inspect(source) {
   const lines = source.split('\n');
@@ -46,11 +48,12 @@ function inspect(source) {
     if (end < 0) throw failure('global_config_conflict', 'Gateway provider definition is incomplete.');
     const provider = lines.slice(defined + 1, end).join('\n') + '\n';
     const port = Number(provider.match(/^base_url = "http:\/\/127\.0\.0\.1:(\d+)\/v1"$/m)?.[1]);
-    const openaiAuth = provider === gatewayProvider(port, true);
-    if (!Number.isInteger(port) || (!openaiAuth && provider !== gatewayProvider(port)) ||
+    const legacy = [false, true].some(auth => provider === legacyProvider(port, auth));
+    const openaiAuth = provider === gatewayProvider(port, true) || provider === legacyProvider(port, true);
+    if (!Number.isInteger(port) || (!legacy && !openaiAuth && provider !== gatewayProvider(port)) ||
         Buffer.from(old, 'base64').toString('base64') !== old)
       throw failure('global_config_conflict', 'Gateway provider definition has changed.');
-    return { enabled: true, port, openaiAuth, previous: Buffer.from(old, 'base64').toString(), lines, chosen, defined, end };
+    return { enabled: true, port, openaiAuth, legacy, previous: Buffer.from(old, 'base64').toString(), lines, chosen, defined, end };
   }
   if (/^\s*\[model_providers\.(?:"codex-gateway"|codex-gateway)\]\s*$/m.test(source) ||
       /^\s*model_provider\s*=\s*["']codex-gateway["']\s*$/m.test(source))
@@ -64,7 +67,7 @@ export function globalConfigState(source) {
   const enabled = state.enabled || route.enabled;
   return {
     enabled, port: state.port ?? route.port, openai_auth: state.openaiAuth ?? null,
-    needs_update: enabled && !(state.enabled && route.enabled && state.port === route.port && state.openaiAuth),
+    needs_update: enabled && !(state.enabled && route.enabled && state.port === route.port && state.openaiAuth && !state.legacy),
   };
 }
 
@@ -79,7 +82,7 @@ export function changeGlobalConfig(source, enabled, port) {
 function changeProvider(source, enabled, port) {
   const state = inspect(source);
   if (state.enabled && enabled) {
-    if (state.openaiAuth && state.port === port) return source;
+    if (state.openaiAuth && !state.legacy && state.port === port) return source;
     const lines = state.lines;
     lines.splice(state.defined + 1, state.end - state.defined - 1, ...gatewayProvider(port, true).trimEnd().split('\n'));
     return lines.join('\n');

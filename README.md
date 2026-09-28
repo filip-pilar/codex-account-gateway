@@ -58,7 +58,7 @@ Use `--json` and branch on `code` and `next_action`. `login` is interactive. Exi
    node src/cli.mjs setup --model MODEL --client-dir /absolute/path/to/new-client --json
    ```
 
-   Expected code: `configuration_created`. Launch the client using the returned `launch` fields or `launch_command` when requested. Existing directories are rejected. Omit `--client-dir` to return TOML without writing files. Generated settings use low reasoning and disable retries and startup update checks.
+   Expected code: `configuration_created`. Launch the client using the returned `launch` fields or `launch_command` when requested. Existing directories are rejected. Omit `--client-dir` to return TOML without writing files. Reasoning, retries, timeouts, and update checks use the client's defaults.
 
 5. Verify locally:
 
@@ -91,7 +91,7 @@ node src/cli.mjs stop --json
 
 | Condition | Action |
 |---|---|
-| `login_required` or `upstream_login_expired` | Repeat official isolated `login` |
+| `login_required` or upstream authentication failure | Repeat official isolated `login` |
 | `port_in_use` | Select another port; use it in both start and setup |
 | `stale` | Run `start` to recover or `stop` to remove stale runtime state |
 | `runtime_unavailable`, `unsafe_runtime`, `lifecycle_busy` | Follow [recovery instructions](docs/cli.md#conservative-recovery); do not signal unverified PIDs or delete backing credentials |
@@ -100,12 +100,13 @@ Enable **Settings → Keep gateway running** in the Mac app to launch at login a
 
 ## Boundary
 
-- Routes: streaming `/v1/responses`, `/v1/alpha/search`, `/v1/images/generations`, `/v1/images/edits`.
-- Original request bytes, gzip/zstd encoding, allowlisted routing headers, and returned turn state are preserved. Turn-state lifetime belongs to the client.
+- Routes: `/v1/responses`, `/v1/responses/compact`, `/v1/alpha/search`, `/v1/images/generations`, `/v1/images/edits`, including query parameters.
+- Request and response bodies stream unchanged, including compressed and multipart bodies. Schema, model, and streaming-mode validation belongs to upstream. Allowlisted routing headers and returned turn state are preserved; turn-state lifetime belongs to the client.
 - Bind: `127.0.0.1` only. Host is checked; browser Origin requests are rejected. Inference routes trust local processes; control routes require a private token. Do not expose the port.
 - Caller credentials and the actor eligibility marker are stripped. Only the isolated backing login authenticates upstream; the marker grants no entitlements.
-- Request body/decompression cap: 16 MiB. Total request deadline: four minutes. No inference retries.
-- No gateway-managed credential refresh, model discovery, inference retries, Chat Completions, WebSockets, or remote compaction endpoint.
+- Transport defaults: 256 MiB per request on the wire, 1 MiB headers in either direction, and a 15-minute idle timeout. There is no decoded-body, JSON-depth, or total-response-duration limit. [Profile overrides](docs/cli.md#transport-limits) need no source changes.
+- Upstream status, error bodies, and retry guidance reach the client unchanged; the gateway never logs bodies, follows redirects, or retries inference. Client retry policy remains client-owned.
+- No gateway-managed credential refresh, model discovery, Chat Completions, or WebSockets.
 
 ## Development and verification
 
