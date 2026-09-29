@@ -39,11 +39,12 @@ struct AccountStatus {
     let canSelect: Bool
     var rowNote: String? { canSelect || tone == .positive ? nil : title }
 
-    init(account: Account, weekly: UsageWindow?, usageError: Bool) {
+    init(account: Account, weekly: UsageWindow?, usageError: Bool, allowReserveUsage: Bool = false) {
         if !account.authenticated {
             title = "Sign in required"; tone = .neutral; canSelect = false
         } else if let weekly, weekly.remaining_percent <= 5 {
-            title = "Weekly reserve reached"; tone = .caution; canSelect = false
+            title = allowReserveUsage ? (account.selected ? "Selected · Using reserve" : "Reserve available") : "Weekly reserve reached"
+            tone = .caution; canSelect = allowReserveUsage && !account.selected
         } else if usageError {
             title = "Usage out of date"; tone = .caution; canSelect = !account.selected
         } else if weekly == nil {

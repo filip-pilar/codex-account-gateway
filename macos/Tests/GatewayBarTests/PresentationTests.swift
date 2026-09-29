@@ -48,6 +48,16 @@ final class PresentationTests: XCTestCase {
         XCTAssertFalse(AccountStatus(account: signedOut, weekly: nil, usageError: true).canSelect)
     }
 
+    func testReserveOptInAllowsSelectionAndShowsReserveUse() throws {
+        let weekly = UsageWindow(remaining_percent: 2, window_minutes: 10080, resets_at: nil)
+        let selected = Account(id: "default", label: "Default", selected: true, authenticated: true)
+        XCTAssertEqual(AccountStatus(account: selected, weekly: weekly, usageError: false, allowReserveUsage: true).title, "Selected · Using reserve")
+        let other = Account(id: "other", label: "Other", selected: false, authenticated: true)
+        XCTAssertTrue(AccountStatus(account: other, weekly: weekly, usageError: false, allowReserveUsage: true).canSelect)
+        let json = #"{"ok":true,"code":"reserve_usage","allow_reserve_usage":true}"#
+        XCTAssertEqual(try JSONDecoder().decode(Reply.self, from: Data(json.utf8)).allow_reserve_usage, true)
+    }
+
     @MainActor func testDemoActionsCannotChangeTheLiveGatewayOrStartupPreferences() async {
         let defaults = UserDefaults.standard
         let enabled = defaults.bool(forKey: "runAutomatically")
@@ -56,6 +66,8 @@ final class PresentationTests: XCTestCase {
         await model.action(["stop"], success: "Stopped")
         await model.setAutomaticRun(true)
         await model.setGlobalProvider(false)
+        await model.setReserveUsage(true)
+        XCTAssertFalse(model.allowReserveUsage)
         let added = await model.add(label: "Test")
         let renamed = await model.rename(model.accounts[0], to: "Changed")
         let created = await model.createClient(modelID: "fixture")

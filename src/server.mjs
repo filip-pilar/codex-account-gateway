@@ -8,7 +8,7 @@ const headersToForward = ['content-type','content-encoding','content-length','ac
 const responseHeadersToForward = ['content-type', 'content-encoding', 'content-length', 'retry-after', 'retry-after-ms', 'x-request-id', 'x-codex-turn-state', 'x-codex-routing-hint'];
 const routes = new Map(['/responses','/responses/compact','/alpha/search','/images/generations','/images/edits'].map(p => ['/v1'+p, 'https://chatgpt.com/backend-api/codex'+p]));
 const equal = (a,b) => typeof a === 'string' && Buffer.byteLength(a) === Buffer.byteLength(b) && timingSafeEqual(Buffer.from(a),Buffer.from(b));
-export async function startServer({port=8787, credentials, transport=requestUpstream, controlToken, instanceId = 'fixture', onStop=()=>{}, onSelect=null, routingStatus=()=>undefined, usageStatus=null, refreshUsage=null, maxBytes=DEFAULT_LIMITS.max_request_bytes, timeoutMs=DEFAULT_LIMITS.idle_timeout_ms, maxHeaderBytes=DEFAULT_LIMITS.max_header_bytes}) {
+export async function startServer({port=8787, credentials, transport=requestUpstream, controlToken, instanceId = 'fixture', onStop=()=>{}, onSelect=null, routingStatus=()=>undefined, usageStatus=null, refreshUsage=null, setReserveUsage=null, maxBytes=DEFAULT_LIMITS.max_request_bytes, timeoutMs=DEFAULT_LIMITS.idle_timeout_ms, maxHeaderBytes=DEFAULT_LIMITS.max_header_bytes}) {
   const limits = validateLimits({ max_request_bytes: maxBytes, idle_timeout_ms: timeoutMs, max_header_bytes: maxHeaderBytes });
   const active = new Set();
   let selecting = false;
@@ -34,6 +34,18 @@ export async function startServer({port=8787, credentials, transport=requestUpst
         res.setHeader('cache-control', 'no-store');
         res.end(body);
       } catch { fail(503, 'usage_status_unavailable'); }
+      return;
+    }
+    const reserve = /^\/control\/reserve-usage\/(true|false)$/.exec(req.url);
+    if (reserve && req.method === 'POST') {
+      if (!controlToken || !equal(req.headers.authorization, `Bearer ${controlToken}`)) return fail(403, 'invalid_control_token');
+      if (!setReserveUsage) return fail(501, 'reserve_usage_unavailable');
+      try {
+        const routing = await setReserveUsage(reserve[1] === 'true');
+        res.setHeader('content-type', 'application/json');
+        res.setHeader('cache-control', 'no-store');
+        res.end(JSON.stringify({ instanceId, routing }));
+      } catch { fail(503, 'reserve_usage_unavailable'); }
       return;
     }
     if ((req.url === '/control/stop' && req.method === 'POST') || (req.url === '/control/status' && req.method === 'GET')) {

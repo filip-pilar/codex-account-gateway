@@ -43,7 +43,7 @@ test('weekly rotation keeps the current account above 5%, switches at 5%, and pe
   await router.refresh();
   assert.equal((await router.credentials()).account, 'fixture-account-1');
   assert.equal((await selectedAccount(root)).id, second.id);
-  assert.deepEqual(router.status(), { mode: 'automatic', weekly_reserve_percent: 5, state: 'ready', account: second.id });
+  assert.deepEqual(router.status(), { mode: 'automatic', weekly_reserve_percent: 5, allow_reserve_usage: false, state: 'ready', account: second.id });
   readings.set(root, limits(100));
   readings.set(paths[1], limits(6));
   await router.refresh();
@@ -255,4 +255,53 @@ test('background refresh is coalesced, polls without clients, and stops its usag
     assert.equal(aborted, 2);
     assert.equal(calls, 4);
   } finally { await router.close(); }
+}));
+
+test('reserve opt-in resumes immediately, prefers replenished accounts, and can pause again', () => fixture(async ({ root, paths, readings, router }) => {
+  for (const path of paths) readings.set(path, limits(5));
+  await router.refresh();
+  await assert.rejects(router.credentials(), { code: 'weekly_reserve_reached' });
+  await router.setAllowReserveUsage(true);
+  assert.equal(router.status().state, 'ready');
+  assert.equal((await router.credentials()).account, 'fixture-account-0');
+  readings.set(root, limits(0));
+  await router.refresh();
+  assert.equal((await router.credentials()).account, 'fixture-account-0');
+  readings.set(paths[1], limits(90));
+  await router.refresh();
+  assert.equal((await router.credentials()).account, 'fixture-account-1');
+  readings.set(paths[1], limits(1));
+  await router.refresh();
+  assert.equal((await router.credentials()).account, 'fixture-account-1');
+  await router.setAllowReserveUsage(false);
+  assert.equal(router.status().state, 'weekly_reserve_reached');
+  await assert.rejects(router.credentials(), { code: 'weekly_reserve_reached' });
+}));
+
+test('reserve control authenticates, leaves active requests intact, and forwards upstream limits once', () => fixture(async ({ paths, readings, router }) => {
+  for (const path of paths) readings.set(path, limits(2));
+  await router.refresh();
+  const began = Promise.withResolvers(), held = Promise.withResolvers();
+  let calls = 0;
+  const server = await startServer({ port: 0, credentials: router.credentials, controlToken: 'fixture-control',
+    routingStatus: router.status, setReserveUsage: router.setAllowReserveUsage,
+    transport: async () => { calls++; began.resolve(); await held.promise; return new Response('quota-limit', { status: 429 }); } });
+  const base = `http://127.0.0.1:${server.port}`;
+  const control = (enabled, token) => fetch(`${base}/control/reserve-usage/${enabled}`, { method: 'POST', headers: { authorization: `Bearer ${token}` } });
+  let pending;
+  try {
+    assert.equal((await control(true, 'wrong')).status, 403);
+    assert.equal(router.status().allow_reserve_usage, false);
+    assert.equal((await control(true, 'fixture-control')).status, 200);
+    pending = fetch(`${base}/v1/responses`, { method: 'POST', body: '{}' });
+    await began.promise;
+    assert.equal((await control(false, 'fixture-control')).status, 200);
+    const blocked = await fetch(`${base}/v1/responses`, { method: 'POST', body: '{}' });
+    assert.equal(blocked.status, 503);
+    held.resolve();
+    const result = await pending;
+    assert.equal(result.status, 429);
+    assert.equal(await result.text(), 'quota-limit');
+    assert.equal(calls, 1);
+  } finally { held.resolve(); await pending; await server.close(); }
 }));

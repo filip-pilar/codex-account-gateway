@@ -1,5 +1,6 @@
 import { listAccounts, selectedAccount, accountRoot, selectAccount, accountError } from './accounts.mjs';
 import { readAuth } from './state.mjs';
+import { writeReserveUsage } from './reserve.mjs';
 import { readUsage } from './usage.mjs';
 
 export const WEEKLY_RESERVE = 5;
@@ -18,7 +19,7 @@ export function weeklyWindow(usage) {
 // a valid new reading clears it; missing data never creates quota or blocks an
 // otherwise eligible account. Credentials are read locally for each request.
 export function createRouter({ root, usage = readUsage, now = Date.now, intervalMs = CHECK_INTERVAL_MS,
-  select = id => selectAccount(root, id) }) {
+  allowReserveUsage = false, select = id => selectAccount(root, id) }) {
   const snapshots = new Map(), diagnostics = new Map(), cancellation = new AbortController();
   let checking, timer, closed = false, queue = Promise.resolve(), failedChecks = 0, nextCheckAt = null;
   let state = 'checking_usage', account = null;
@@ -39,7 +40,7 @@ export function createRouter({ root, usage = readUsage, now = Date.now, interval
   };
   const atReserve = id => currentWindow(id)?.remaining_percent <= WEEKLY_RESERVE;
   const degraded = id => !freshWindow(id) || !!diagnostics.get(id)?.last_error;
-  const status = () => ({ mode: 'automatic', weekly_reserve_percent: WEEKLY_RESERVE,
+  const status = () => ({ mode: 'automatic', weekly_reserve_percent: WEEKLY_RESERVE, allow_reserve_usage: allowReserveUsage,
     state: state === 'ready' && degraded(account) ? 'usage_degraded' : state, account });
 
   async function choose() {
@@ -55,6 +56,7 @@ export function createRouter({ root, usage = readUsage, now = Date.now, interval
       ...eligible.filter(item => item.id === account),
       ...eligible.filter(item => item.id !== account && freshWindow(item.id)),
       ...eligible.filter(item => item.id !== account && !freshWindow(item.id)),
+      ...(allowReserveUsage ? ordered.filter(item => item.authenticated && atReserve(item.id)) : []),
     ];
     for (const candidate of candidates) {
       let auth;
@@ -138,6 +140,18 @@ export function createRouter({ root, usage = readUsage, now = Date.now, interval
   return {
     refresh,
     status,
+    setAllowReserveUsage(enabled) {
+      return serial(async () => {
+        if (closed) throw accountError('usage_unavailable', 'Gateway is stopping.');
+        await writeReserveUsage(root, enabled);
+        allowReserveUsage = enabled;
+        try { await choose(); }
+        catch (error) {
+          if (!['weekly_reserve_reached', 'login_required'].includes(error.code)) throw error;
+        }
+        return status();
+      });
+    },
     async usageStatus() {
       const accounts = await listAccounts(root);
       return { checking: !!checking, next_check_at: nextCheckAt, accounts: accounts.map(item => ({

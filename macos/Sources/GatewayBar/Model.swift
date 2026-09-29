@@ -18,12 +18,13 @@ struct Reply: Decodable {
     let launch_command: String?
     let client_dir: String?
     let url: String?
+    let allow_reserve_usage: Bool?
     let routing: Routing?
     let usage_status: UsageStatus?
     let global: GlobalProvider?
     struct AddedAccount: Decodable { let id: String }
     struct GlobalProvider: Decodable { let enabled: Bool; let port: Int?; let needs_update: Bool? }
-    enum CodingKeys: String, CodingKey { case ok, code, accounts, account, config, launch_command, client_dir, url, routing, usage_status, global }
+    enum CodingKeys: String, CodingKey { case allow_reserve_usage, ok, code, accounts, account, config, launch_command, client_dir, url, routing, usage_status, global }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         ok = try c.decode(Bool.self, forKey: .ok)
@@ -34,6 +35,7 @@ struct Reply: Decodable {
         launch_command = try c.decodeIfPresent(String.self, forKey: .launch_command)
         client_dir = try c.decodeIfPresent(String.self, forKey: .client_dir)
         url = try c.decodeIfPresent(String.self, forKey: .url)
+        allow_reserve_usage = try c.decodeIfPresent(Bool.self, forKey: .allow_reserve_usage)
         routing = try c.decodeIfPresent(Routing.self, forKey: .routing)
         usage_status = try c.decodeIfPresent(UsageStatus.self, forKey: .usage_status)
         global = try c.decodeIfPresent(GlobalProvider.self, forKey: .global)
@@ -110,6 +112,7 @@ func shellQuote(_ value: String) -> String { "'" + value.replacingOccurrences(of
     @Published var checkingUsage = false
     @Published var refreshingAccount: String?
     @Published var runAutomatically: Bool
+    @Published var allowReserveUsage = false
     @Published var routing: Routing?
     @Published var globalEnabled = false
     @Published var connectionNeedsUpdate = false
@@ -203,6 +206,9 @@ func shellQuote(_ value: String) -> String { "'" + value.replacingOccurrences(of
             } else {
                 checkingUsage = refreshingAccount != nil
             }
+            let reserve = try await backend.reply(["reserve-usage"])
+            guard reserve.ok else { throw GatewayFailure(code: reserve.code) }
+            allowReserveUsage = reserve.allow_reserve_usage ?? false
             let global = try await backend.reply(["global-status"])
             guard global.ok else { throw GatewayFailure(code: global.code) }
             globalEnabled = global.global?.enabled ?? false
@@ -241,6 +247,20 @@ func shellQuote(_ value: String) -> String { "'" + value.replacingOccurrences(of
             message = "Could not change automatic startup. Move the app to Applications and check System Settings → General → Login Items."
             isError = true
         }
+        busy = false
+        await poll()
+    }
+
+    func setReserveUsage(_ enabled: Bool) async {
+        guard !busy, !isDemo else { return }
+        busy = true
+        do {
+            let reply = try await backend.reply(["reserve-usage", "--enabled", enabled ? "true" : "false"])
+            guard reply.ok else { throw GatewayFailure(code: reply.code) }
+            allowReserveUsage = reply.allow_reserve_usage ?? enabled
+            message = enabled ? "Reserve usage allowed. No restart needed." : "The 5% weekly reserve is protected."
+            isError = false
+        } catch { report(error) }
         busy = false
         await poll()
     }
@@ -371,6 +391,7 @@ func shellQuote(_ value: String) -> String { "'" + value.replacingOccurrences(of
         case "node_unavailable": return "Node.js 22.15 or newer is required."
         case "usage_timeout": return "Usage check timed out. Try refreshing later."
         case "usage_unavailable": return "Usage unavailable. Try refreshing later."
+        case "reserve_usage_unavailable": return "Could not update reserve usage. Restart the gateway if its backend has not been updated, then try again."
         case "usage_status_unavailable": return "Gateway usage status is unavailable. Restart the gateway to load the updated backend."
         case "port_in_use": return "Port 8787 is occupied. Stop the other service before starting."
         case "client_directory_exists": return "Choose a new folder name; that folder already exists."

@@ -206,7 +206,7 @@ struct GatewayView: View {
 
     private func accountRow(_ account: Account) -> some View {
         let weekly = model.usages[account.id]?.weeklyWindow
-        let state = AccountStatus(account: account, weekly: weekly, usageError: model.usageErrors[account.id] != nil)
+        let state = AccountStatus(account: account, weekly: weekly, usageError: model.usageErrors[account.id] != nil, allowReserveUsage: model.allowReserveUsage)
         return Button { page = .account(account.id) } label: {
             HStack(spacing: 10) {
                 Image(systemName: account.selected ? "checkmark.circle.fill" : "person.crop.circle")
@@ -316,6 +316,16 @@ struct GatewayView: View {
                     Button("Allow in Login Items…") { model.openLoginSettings() }
                 }
                 Divider()
+                Toggle(isOn: Binding(get: { model.allowReserveUsage }, set: { enabled in
+                    Task { await model.setReserveUsage(enabled) }
+                })) {
+                    Text("Allow reserve usage").frame(maxWidth: .infinity, alignment: .leading)
+                }.toggleStyle(.switch).controlSize(.small).disabled(model.busy)
+                    .accessibilityLabel("Allow reserve usage")
+                    .help("Continue below 5% when all accounts reach the weekly reserve. No restart needed.")
+                Text("Prefer accounts above 5%, then continue on the selected account. Account usage limits still apply.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Divider()
                 Toggle(isOn: Binding(get: { model.globalEnabled }, set: { enabled in
                     Task { await model.setGlobalProvider(enabled) }
                 })) {
@@ -403,7 +413,7 @@ struct GatewayView: View {
                     .help("Quits the menu app. The gateway stays running; automatic monitoring stops.")
             case .account(let id):
                 if let account = model.accounts.first(where: { $0.id == id }) {
-                    let state = AccountStatus(account: account, weekly: model.usages[id]?.weeklyWindow, usageError: model.usageErrors[id] != nil)
+                    let state = AccountStatus(account: account, weekly: model.usages[id]?.weeklyWindow, usageError: model.usageErrors[id] != nil, allowReserveUsage: model.allowReserveUsage)
                     if account.selected && account.authenticated {
                         Label("Selected account", systemImage: "checkmark.circle.fill").foregroundStyle(.secondary)
                         Spacer()

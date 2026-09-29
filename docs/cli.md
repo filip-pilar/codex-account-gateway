@@ -21,6 +21,7 @@ Invoke `node src/cli.mjs COMMAND`. No global installation is required. `CODEX_GA
 | `openai-route-enable` | optional `--port NUMBER` | Compatibility alias for `global-enable` |
 | `openai-route-disable` | none | Compatibility alias for `global-disable` |
 | `usage` | `--account ID` | One-off diagnostic read through official CLI app-server; no inference |
+| `reserve-usage` | optional `--enabled true\|false` | Read or persist reserve usage permission; applies immediately to a running gateway |
 | `usage-status` | `--refresh` | Read the running gateway’s shared usage cache; optionally request a background refresh |
 | `help` | `--json` | Usage |
 
@@ -124,9 +125,17 @@ Requests already in progress retain their captured credentials and finish normal
 `status --json` retains its existing runtime codes and adds `routing`:
 
 ```json
-{"mode":"automatic","weekly_reserve_percent":5,"state":"ready","account":"default"}
+{"mode":"automatic","weekly_reserve_percent":5,"allow_reserve_usage":false,"state":"ready","account":"default"}
 ```
 
-Routing states include `checking_usage`, `ready`, `usage_degraded`, `weekly_reserve_reached`, `usage_unavailable`, and `login_required`. `usage_degraded` means requests continue but usage is stale, missing, or the last check failed. A runtime can be `running` while routing is paused. All signed-in accounts confirmed at reserve return HTTP 503 / `weekly_reserve_reached` without contacting upstream; missing credentials retains HTTP 401 / `isolated_login_required`. Usage-fetch failures alone do not pause routing. `usage_unavailable` is retained for lifecycle/control failures and compatibility. Background checks resume routing when a reserve is cleared. Manual selection cannot bypass a confirmed reserve.
+Routing states include `checking_usage`, `ready`, `usage_degraded`, `weekly_reserve_reached`, `usage_unavailable`, and `login_required`. `usage_degraded` means requests continue but usage is stale, missing, or the last check failed. A runtime can be `running` while routing is paused. By default, all signed-in accounts confirmed at reserve return HTTP 503 / `weekly_reserve_reached` without contacting upstream; missing credentials retains HTTP 401 / `isolated_login_required`. Usage-fetch failures alone do not pause routing. `usage_unavailable` is retained for lifecycle/control failures and compatibility. Background checks resume routing when a reserve is cleared. Manual selection cannot bypass a confirmed reserve while reserve usage is disabled.
 
 Shutdown aborts usage reads and terminates their owned CLI children. Usage snapshots are memory-only. The Mac app's opt-in login item and restart monitoring are described in [automatic operation](macos.md#automatic-operation); the CLI does not install a service.
+
+## Reserve usage override
+
+`reserve-usage --json` reads `allow_reserve_usage`, defaulting to `false`. Use `reserve-usage --enabled true --json` to allow reserve usage or `--enabled false` to protect it again. Success returns code `reserve_usage`; a running backend without support or a failed control update returns `reserve_usage_unavailable`.
+
+The setting is stored privately in `reserve-usage.json` in the backing profile and survives restarts. Changes use authenticated local control while running and apply to subsequent requests immediately, without restarting Codex or the gateway. `routing.allow_reserve_usage` reports the active policy. A stopped gateway loads the saved setting at startup.
+
+With permission enabled, normal automatic switching still prefers eligible accounts above 5% (then unknown usage). Only when those candidates are unavailable does it use accounts at the reserve, starting with the selected account. Even a reported 0% is forwarded: upstream limits remain authoritative, errors are returned unchanged, and no request is retried or replayed. Turning permission off restores the reserve for new requests; existing requests finish on their captured credentials.

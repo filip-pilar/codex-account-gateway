@@ -10,6 +10,7 @@ import { stateRoot, ensureState, writePrivate, readPrivate, noSymlinkParents } f
 import { startServer } from './server.mjs';
 import { selectedAccount, getAccount, listAccounts, addAccount, renameAccount, selectAccount } from './accounts.mjs';
 import { readUsage } from './usage.mjs';
+import { readReserveUsage, writeReserveUsage } from './reserve.mjs';
 import { createRouter } from './routing.mjs';
 import { readLimits } from './limits.mjs';
 import { gatewayProvider, readGlobalConfig, setGlobalConfig } from './global-config.mjs';
@@ -28,7 +29,7 @@ function options() {
   const allowed = {
     help: [], '--help': [], '-h': [], login: ['--account'],
     accounts: [], 'account-add': ['--label'], 'account-rename': ['--account', '--label'], 'account-select': ['--account'], usage: ['--account'], 'usage-status': ['--refresh'],
-    'global-status': [], 'global-enable': ['--port'], 'global-disable': [],
+    'reserve-usage': ['--enabled'], 'global-status': [], 'global-enable': ['--port'], 'global-disable': [],
     'openai-route-status': [], 'openai-route-enable': ['--port'], 'openai-route-disable': [],
     start: ['--port', '--background'], stop: [], status: [], doctor: ['--port'],
     setup: ['--port', '--model', '--client-dir'],
@@ -61,7 +62,7 @@ function probe(r, action = 'status') {
     let settled = false;
     const finish = value => { if (settled) return; settled = true; clearTimeout(timer); resolve(value); req.destroy(); };
     const req = http.request({ hostname: '127.0.0.1', port: r.port, path: `/control/${action}`,
-      method: action === 'stop' ? 'POST' : 'GET', agent: false,
+      method: action === 'stop' || action.startsWith('reserve-usage/') ? 'POST' : 'GET', agent: false,
       headers: { authorization: `Bearer ${r.controlToken}` },
     }, res => {
       let size = 0; const chunks = [];
@@ -232,14 +233,14 @@ async function start(opts, port) {
     const limits = await readLimits(root);
     const r = { pid: process.pid, port, instanceId: randomBytes(16).toString('hex'), controlToken: randomBytes(32).toString('hex') };
     let server, stopping;
-    const router = createRouter({ root, select: id => locked(() => selectAccount(root, id)) });
+    const router = createRouter({ root, allowReserveUsage: await readReserveUsage(root), select: id => locked(() => selectAccount(root, id)) });
     const stop = () => stopping ??= (async () => {
       await Promise.all([router.close(), server.close()]);
       await clearOwned(r.instanceId);
     })().catch(() => { process.exitCode = 1; });
     server = await startServer({ port, credentials: router.credentials, onSelect: router.select,
       maxBytes: limits.max_request_bytes, timeoutMs: limits.idle_timeout_ms, maxHeaderBytes: limits.max_header_bytes,
-      usageStatus: router.usageStatus, refreshUsage: router.refresh,
+      usageStatus: router.usageStatus, refreshUsage: router.refresh, setReserveUsage: router.setAllowReserveUsage,
       routingStatus: router.status, controlToken: r.controlToken, instanceId: r.instanceId, onStop: stop });
     try { await writePrivate(runtime, JSON.stringify(r)); } catch (e) { await server.close(); await router.close(); throw e; }
     void router.refresh();
@@ -265,6 +266,7 @@ global-enable [--port NUMBER]              Connect new and existing OpenAI tasks
 global-disable                              Restore both Codex connection settings
 usage [--account ID]                        Read reported limits via official CLI
 usage-status [--refresh]                    Read shared usage; optionally refresh in background
+reserve-usage [--enabled true|false]         Read or change reserve usage without restarting
 start [--port NUMBER] [--background]        Start or report existing instance
 status                                     Verify selected instance
 stop                                       Stop selected instance (idempotent)
@@ -279,6 +281,25 @@ CODEX_GATEWAY_HOME selects private state. The global and openai-route commands e
   if (command === 'global-status') return output({ ok: true, code: 'global_status', global: await readGlobalConfig() });
   if (command === 'global-enable') return output({ ok: true, code: 'global_enabled', global: await setGlobalConfig(true, port) });
   if (command === 'global-disable') return output({ ok: true, code: 'global_disabled', global: await setGlobalConfig(false) });
+  if (command === 'reserve-usage') {
+    const value = opts['--enabled'];
+    if (value === undefined) return output({ ok: true, code: 'reserve_usage', allow_reserve_usage: await readReserveUsage(root) });
+    if (!['true', 'false'].includes(value)) throw error('invalid_arguments', '--enabled must be true or false.');
+    const enabled = value === 'true';
+    await ensureState(root);
+    const running = await locked(async () => {
+      const r = await saved();
+      if (r && await probe(r)) return r;
+      if (r && alive(r.pid)) throw error('runtime_unavailable', 'Runtime cannot be verified.', 'status');
+      await writeReserveUsage(root, enabled);
+      return null;
+    });
+    if (running) {
+      const result = await probe(running, `reserve-usage/${value}`);
+      if (result?.routing?.allow_reserve_usage !== enabled) throw error('reserve_usage_unavailable', 'Update the gateway backend before changing reserve usage.', 'status');
+    }
+    return output({ ok: true, code: 'reserve_usage', allow_reserve_usage: enabled });
+  }
   if (command === 'accounts') return output({ ok: true, code: 'accounts', accounts: await listAccounts(root) });
   if (command === 'account-add') return output({ ok: true, code: 'account_added', account: await addAccount(root, opts['--label']) });
   if (command === 'account-rename') {

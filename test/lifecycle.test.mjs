@@ -302,7 +302,7 @@ test('CLI automatically selects a usable account and persists it across restart'
       if (status.routing?.state === 'ready') break;
       await new Promise(resolve => setTimeout(resolve, 25));
     } while (Date.now() < deadline);
-    assert.deepEqual(status.routing, { mode: 'automatic', weekly_reserve_percent: 5, state: 'ready', account: id });
+    assert.deepEqual(status.routing, { mode: 'automatic', weekly_reserve_percent: 5, allow_reserve_usage: false, state: 'ready', account: id });
     assert.equal((await run(['accounts', '--json'])).value.accounts.find(item => item.selected).id, id);
     assert.equal((await run(['stop', '--json'])).value.code, 'stopped');
     // Default now has a login but is at the reserve. Restart must keep Second.
@@ -368,4 +368,24 @@ test('CLI reports configured and effective limits and rejects invalid profiles',
   assert.equal(doctor.code, 'local_not_ready'); assert.equal(doctor.limits_error, 'invalid_limits');
   assert.equal((await run(['stop', '--json'])).value.code, 'stopped');
   assert.equal((await run(['start', '--json'])).value.code, 'invalid_limits');
+}));
+
+test('reserve CLI defaults off, persists while stopped, applies live, and survives restart', () => fixture(async ({ run, auth, freePort, root }) => {
+  const setting = async (...args) => (await run(['reserve-usage', ...args, '--json'])).value;
+  assert.equal((await setting()).allow_reserve_usage, false);
+  assert.equal((await setting('--enabled', 'yes')).code, 'invalid_arguments');
+  assert.equal((await setting('--enabled', 'true')).allow_reserve_usage, true);
+  assert.equal((await stat(join(root, 'reserve-usage.json'))).mode & 0o777, 0o600);
+  await auth();
+  await writeFile(join(root, 'codex', 'fixture-usage.json'), JSON.stringify({ used: 99 }));
+  const port = String(await freePort());
+  assert.equal((await run(['start', '--background', '--port', port, '--json'])).value.code, 'started');
+  assert.equal((await setting('--enabled', 'false')).allow_reserve_usage, false);
+  assert.equal((await setting('--enabled', 'true')).allow_reserve_usage, true);
+  const status = (await run(['status', '--json'])).value;
+  assert.equal(status.routing.allow_reserve_usage, true);
+  assert.ok(['ready', 'usage_degraded'].includes(status.routing.state));
+  assert.equal((await run(['stop', '--json'])).value.code, 'stopped');
+  assert.equal((await run(['start', '--background', '--port', port, '--json'])).value.code, 'started');
+  assert.equal((await run(['status', '--json'])).value.routing.allow_reserve_usage, true);
 }));

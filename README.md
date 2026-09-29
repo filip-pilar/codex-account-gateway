@@ -2,7 +2,7 @@
 
 **Automatically switch ChatGPT accounts for Codex CLI without changing your local endpoint.**
 
-Keep separate account profiles behind one loopback gateway, with usage visibility and controls in the CLI or native Mac menu-bar app. Sign in to your backing accounts once. The gateway checks usage automatically and switches to another account when the current account reaches **5% weekly remaining**. Requests already running finish on their original account. If every account is confirmed at the reserve, new requests pause until fresh usage becomes available. Usage-fetch failures alone do not stop requests: the selected account stays usable with a usage warning, so the 5% reserve is not a strict cap during telemetry outages.
+Keep separate account profiles behind one loopback gateway, with usage visibility and controls in the CLI or native Mac menu-bar app. Sign in to your backing accounts once. The gateway checks usage automatically and switches to another account when the current account reaches **5% weekly remaining**. Requests already running finish on their original account. If every account is confirmed at the reserve, new requests pause until fresh usage becomes available. Enable **Allow reserve usage** in Settings to continue on the selected account when every account reaches the reserve; accounts above 5% remain preferred and upstream usage limits still apply. Usage-fetch failures alone do not stop requests: the selected account stays usable with a usage warning, so the 5% reserve is not a strict cap during telemetry outages.
 
 **Current scope: Codex CLI and an opt-in Desktop connection.** A single existing-task turn completed through an alternate backing profile; broader desktop compatibility is unverified.
 
