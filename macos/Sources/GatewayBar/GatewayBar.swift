@@ -48,23 +48,16 @@ struct GatewayView: View {
     @State private var draft = ""
     @State private var hoveredAccount: String?
     @State private var copied = false
+    @State private var contentHeight: CGFloat = 0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @FocusState private var fieldFocused: Bool
     private var status: GatewayStatus {
         GatewayStatus(state: model.state, routing: model.routing)
     }
-    private var panelHeight: CGFloat {
-        let height: CGFloat
-        switch page {
-        case .accounts: height = 166 + CGFloat(max(1, model.accounts.count)) * 58 + (status.notice == nil ? 0 : 70)
-        case .settings: height = 600
-        case .account: height = 460
-        case .rename: height = 190
-        case .clientSetup: height = model.running ? 190 : 220
-        case .add, .confirmStop: height = 220
-        }
-        // Reserve feedback space even when empty so messages never resize the panel.
-        let notices: CGFloat = 80 + (model.loginPending ? 60 : 0)
-        return min(height + notices, (NSScreen.main?.visibleFrame.height ?? 800) - 80)
+    private var scrollHeight: CGFloat {
+        // Header/footer use 106 points; leave room around the menu-bar panel.
+        let available = (NSScreen.main?.visibleFrame.height ?? 800) - 80 - 108
+        return min(max(1, contentHeight), max(1, available))
     }
     private var validName: Bool {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -87,18 +80,28 @@ struct GatewayView: View {
                         }.card()
                     }
                     content
+                    if let message = model.message { feedback(message) }
                 }
                 .padding(16)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+                .onGeometryChange(for: CGFloat.self) { geometry in
+                    ceil(geometry.size.height)
+                } action: { height in
+                    guard height != contentHeight else { return }
+                    withAnimation(contentHeight == 0 || reduceMotion ? nil : .easeInOut(duration: 0.22)) {
+                        contentHeight = height
+                    }
+                }
             }
+            .frame(height: scrollHeight, alignment: .top)
             .scrollBounceBehavior(.basedOnSize)
             .defaultScrollAnchor(.top)
             .id(page)
-            feedback
             Divider()
             footer
         }
-        .frame(width: 380, height: panelHeight)
+        .frame(width: 380)
         .background(.regularMaterial)
         .task {
             if !model.isDemo { UserDefaults.standard.set(true, forKey: "didShowWelcome") }
@@ -385,34 +388,20 @@ struct GatewayView: View {
             if let hint { Text(hint).font(.caption).foregroundStyle(.secondary) }
         }
     }
-    private var feedback: some View {
-        // A fixed slot outside the content scroll view keeps controls stationary.
-        ZStack(alignment: .topLeading) {
-            if let message = model.message {
-                HStack(alignment: .top, spacing: 8) {
-                    Image(systemName: model.isError ? "exclamationmark.circle.fill" : "checkmark.circle")
-                        .foregroundStyle(model.isError ? Color.orange : .secondary)
-                    ScrollView {
-                        Text(message).font(.callout)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .textSelection(.enabled)
-                    }
-                    .scrollBounceBehavior(.basedOnSize)
-                    .id(message)
-                    Button { model.message = nil } label: {
-                        Image(systemName: "xmark").font(.caption2).frame(width: 18, height: 18)
-                    }
-                    .buttonStyle(.borderless).accessibilityLabel("Dismiss message")
-                }
-                .padding(12)
-                .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 12))
-                .padding(.horizontal, 16)
-                .padding(.bottom, 8)
+    private func feedback(_ message: String) -> some View {
+        // Append feedback after the controls: no empty slot and no controls pushed down.
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: model.isError ? "exclamationmark.circle.fill" : "checkmark.circle")
+                .foregroundStyle(model.isError ? Color.orange : .secondary)
+            Text(message).font(.callout)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+            Button { model.message = nil } label: {
+                Image(systemName: "xmark").font(.caption2).frame(width: 18, height: 18)
             }
-        }
-        .frame(maxWidth: .infinity)
-        .frame(height: 80, alignment: .top)
+            .buttonStyle(.borderless).accessibilityLabel("Dismiss message")
+        }.card()
     }
 
     private var footer: some View {
