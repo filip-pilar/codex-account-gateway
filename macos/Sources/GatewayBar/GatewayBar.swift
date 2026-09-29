@@ -56,13 +56,14 @@ struct GatewayView: View {
         let height: CGFloat
         switch page {
         case .accounts: height = 166 + CGFloat(max(1, model.accounts.count)) * 58 + (status.notice == nil ? 0 : 70)
-        case .settings: height = model.connectionNeedsUpdate ? 450 : 420
+        case .settings: height = 600
         case .account: height = 460
         case .rename: height = 190
         case .clientSetup: height = model.running ? 190 : 220
         case .add, .confirmStop: height = 220
         }
-        let notices: CGFloat = (model.message == nil ? 0 : 70) + (model.loginPending ? 60 : 0)
+        // Reserve feedback space even when empty so messages never resize the panel.
+        let notices: CGFloat = 80 + (model.loginPending ? 60 : 0)
         return min(height + notices, (NSScreen.main?.visibleFrame.height ?? 800) - 80)
     }
     private var validName: Bool {
@@ -76,7 +77,6 @@ struct GatewayView: View {
             Divider()
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    if let message = model.message { notice(message) }
                     if model.loginPending {
                         HStack(alignment: .top, spacing: 12) {
                             Text("Complete sign-in in Terminal.")
@@ -94,6 +94,7 @@ struct GatewayView: View {
             .scrollBounceBehavior(.basedOnSize)
             .defaultScrollAnchor(.top)
             .id(page)
+            feedback
             Divider()
             footer
         }
@@ -384,15 +385,34 @@ struct GatewayView: View {
             if let hint { Text(hint).font(.caption).foregroundStyle(.secondary) }
         }
     }
-    private func notice(_ message: String) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: model.isError ? "exclamationmark.circle.fill" : "checkmark.circle")
-                .foregroundStyle(model.isError ? Color.orange : .secondary)
-            Text(message).font(.callout).fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 0)
-            Button { model.message = nil } label: { Image(systemName: "xmark").font(.caption2).frame(width: 18, height: 18) }
-                .buttonStyle(.borderless).accessibilityLabel("Dismiss message")
-        }.card()
+    private var feedback: some View {
+        // A fixed slot outside the content scroll view keeps controls stationary.
+        ZStack(alignment: .topLeading) {
+            if let message = model.message {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: model.isError ? "exclamationmark.circle.fill" : "checkmark.circle")
+                        .foregroundStyle(model.isError ? Color.orange : .secondary)
+                    ScrollView {
+                        Text(message).font(.callout)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .textSelection(.enabled)
+                    }
+                    .scrollBounceBehavior(.basedOnSize)
+                    .id(message)
+                    Button { model.message = nil } label: {
+                        Image(systemName: "xmark").font(.caption2).frame(width: 18, height: 18)
+                    }
+                    .buttonStyle(.borderless).accessibilityLabel("Dismiss message")
+                }
+                .padding(12)
+                .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 12))
+                .padding(.horizontal, 16)
+                .padding(.bottom, 8)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: 80, alignment: .top)
     }
 
     private var footer: some View {
