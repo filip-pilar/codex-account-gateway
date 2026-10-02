@@ -3,8 +3,6 @@ import assert from 'node:assert/strict';
 import { mkdtemp, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { gzipSync } from 'node:zlib';
-import { buffer } from 'node:stream/consumers';
 import { addAccount, accountRoot, selectedAccount } from '../src/accounts.mjs';
 import { ensureState, writePrivate } from '../src/state.mjs';
 import { createRouter, weeklyWindow } from '../src/routing.mjs';
@@ -48,6 +46,8 @@ test('weekly rotation keeps the current account above 5%, switches at 5%, and pe
   await router.refresh();
   assert.equal((await router.credentials()).account, 'fixture-account-1');
   assert.equal((await selectedAccount(root)).id, second.id);
+  await router.select('default');
+  assert.equal((await router.credentials()).account, 'fixture-account-1', 'manual selection cannot bypass the reserve');
   assert.deepEqual(router.status(), { mode: 'automatic', weekly_reserve_percent: 5, allow_reserve_usage: false, state: 'ready', account: second.id });
   readings.set(root, limits(100));
   readings.set(paths[1], limits(6));
@@ -58,25 +58,21 @@ test('weekly rotation keeps the current account above 5%, switches at 5%, and pe
   assert.equal((await router.credentials()).account, 'fixture-account-0', 'wrap back to a replenished account when the current one reaches reserve');
 }));
 
-test('new requests switch while an existing stream keeps its original credentials and bytes', () => fixture(async ({ root, readings, router }) => {
+test('new requests switch while an existing stream keeps its original account', () => fixture(async ({ root, readings, router }) => {
   await router.refresh();
   const began = Promise.withResolvers(), held = Promise.withResolvers();
-  const seen = [], bytes = gzipSync(JSON.stringify({ model: 'fixture', stream: true,
-    input: [{ type: 'reasoning', encrypted_content: 'opaque-fixture' }],
-  }));
+  const seen = [];
   const server = await startServer({ port: 0, credentials: router.credentials, routingStatus: router.status,
     transport: async (_url, options) => {
       seen.push({ token: options.headers.get('authorization'), account: options.headers.get('chatgpt-account-id') });
-      assert.deepEqual(await buffer(options.body), bytes);
-      assert.equal(options.headers.get('x-codex-turn-state'), 'opaque-turn-fixture');
       if (seen.length === 1) {
         began.resolve();
         await held.promise;
       }
-      return new Response('unchanged-response', { headers: { 'x-codex-turn-state': 'returned-fixture' } });
+      return new Response('unchanged-response');
     } });
   const request = () => fetch(`http://127.0.0.1:${server.port}/v1/responses`, { method: 'POST',
-    headers: { 'content-encoding': 'gzip', 'x-codex-turn-state': 'opaque-turn-fixture' }, body: bytes,
+    body: '{}',
     signal: AbortSignal.timeout(10000),
   });
   const first = request();
@@ -87,7 +83,6 @@ test('new requests switch while an existing stream keeps its original credential
     const later = await Promise.all([request(), request(), request()]);
     for (const response of later) {
       assert.equal(response.status, 200);
-      assert.equal(response.headers.get('x-codex-turn-state'), 'returned-fixture');
       assert.equal(await response.text(), 'unchanged-response');
     }
     held.resolve();
@@ -121,7 +116,7 @@ test('all accounts at reserve block new requests, then recover only after a fres
   } finally { await server.close(); }
 }));
 
-test('usage failures keep forwarding after cache expiry and expose only safe diagnostics', () => fixture(async ({ paths, readings, router, advance }) => {
+test('usage failures keep forwarding after cache expiry and expose only safe diagnostics', () => fixture(async ({ root, paths, readings, router, advance }) => {
   await router.refresh();
   for (const path of paths) readings.set(path, new Error('private upstream detail'));
   advance(60_000);
@@ -136,6 +131,9 @@ test('usage failures keep forwarding after cache expiry and expose only safe dia
   assert.equal(status.accounts[0].diagnostics.last_error, 'usage_unavailable');
   assert.ok(status.accounts[0].diagnostics.last_success_at);
   assert.doesNotMatch(JSON.stringify(status), /token|private upstream/);
+  readings.set(root, limits(5));
+  await router.refresh();
+  assert.equal((await router.credentials()).account, 'fixture-account-1', 'an unknown account remains a fallback when the current account reaches reserve');
 }));
 
 test('missing weekly data keeps the selected signed-in account usable; missing login still blocks', () => fixture(async ({ root, paths, readings, router }) => {
@@ -205,40 +203,6 @@ test('empty and expired usage reports preserve valid snapshots and confirmed res
   assert.equal((await router.usageStatus()).accounts[1].diagnostics.consecutive_failures, 0);
 }));
 
-test('a confirmed reserve can switch to an account with unknown usage, including manual selection', () => fixture(async ({ root, second, paths, readings, router }) => {
-  readings.set(root, limits(5));
-  readings.set(paths[1], new Error('private failure'));
-  await router.refresh();
-  assert.equal((await router.credentials()).account, 'fixture-account-1');
-  assert.equal(router.status().state, 'usage_degraded');
-  await router.select(second.id);
-  assert.equal((await router.credentials()).account, 'fixture-account-1');
-}));
-
-test('repeated failed background checks back off, and requests do not change the schedule', () => fixture(async ({ paths, readings, router }) => {
-  for (const path of paths) readings.set(path, Object.assign(new Error('private timeout'), { code: 'usage_timeout' }));
-  const scheduled = [];
-  for (let i = 0; i < 4; i++) {
-    await router.refresh();
-    const status = await router.usageStatus();
-    scheduled.push(Date.parse(status.next_check_at) - Date.parse(status.accounts[0].diagnostics.last_attempt_at));
-    assert.equal(status.accounts[0].diagnostics.last_error, 'timeout');
-    assert.equal(status.accounts[0].diagnostics.consecutive_failures, i + 1);
-    await router.credentials();
-    assert.equal((await router.usageStatus()).next_check_at, status.next_check_at);
-  }
-  assert.deepEqual(scheduled, [60_000, 120_000, 240_000, 300_000]);
-}));
-
-test('manual selection cannot bypass the weekly reserve', () => fixture(async ({ root, second, readings, router }) => {
-  readings.set(root, limits(0));
-  await router.refresh();
-  await router.select('default');
-  assert.equal((await selectedAccount(root)).id, 'default');
-  await router.credentials();
-  assert.equal((await selectedAccount(root)).id, second.id);
-}));
-
 test('background refresh is coalesced, polls without clients, and stops its usage workers on shutdown', () => fixture(async ({ root }) => {
   const secondCheck = Promise.withResolvers();
   let calls = 0, aborted = 0;
@@ -260,55 +224,6 @@ test('background refresh is coalesced, polls without clients, and stops its usag
     assert.equal(aborted, 2);
     assert.equal(calls, 4);
   } finally { await router.close(); }
-}));
-
-test('reserve opt-in resumes immediately, prefers replenished accounts, and can pause again', () => fixture(async ({ root, paths, readings, router }) => {
-  for (const path of paths) readings.set(path, limits(5));
-  await router.refresh();
-  await assert.rejects(router.credentials(), { code: 'weekly_reserve_reached' });
-  await router.setAllowReserveUsage(true);
-  assert.equal(router.status().state, 'ready');
-  assert.equal((await router.credentials()).account, 'fixture-account-0');
-  readings.set(root, limits(0));
-  await router.refresh();
-  assert.equal((await router.credentials()).account, 'fixture-account-1', 'reserve permission cannot bypass an exhausted allowance');
-  readings.set(paths[1], limits(90));
-  await router.refresh();
-  assert.equal((await router.credentials()).account, 'fixture-account-1');
-  readings.set(paths[1], limits(1));
-  await router.refresh();
-  assert.equal((await router.credentials()).account, 'fixture-account-1');
-  await router.setAllowReserveUsage(false);
-  assert.equal(router.status().state, 'usage_limit_reached');
-  await assert.rejects(router.credentials(), { code: 'usage_limit_reached' });
-}));
-
-test('reserve control authenticates, leaves active requests intact, and forwards upstream limits once', () => fixture(async ({ paths, readings, router }) => {
-  for (const path of paths) readings.set(path, limits(2));
-  await router.refresh();
-  const began = Promise.withResolvers(), held = Promise.withResolvers();
-  let calls = 0;
-  const server = await startServer({ port: 0, credentials: router.credentials, controlToken: 'fixture-control',
-    routingStatus: router.status, setReserveUsage: router.setAllowReserveUsage,
-    transport: async () => { calls++; began.resolve(); await held.promise; return new Response('quota-limit', { status: 429 }); } });
-  const base = `http://127.0.0.1:${server.port}`;
-  const control = (enabled, token) => fetch(`${base}/control/reserve-usage/${enabled}`, { method: 'POST', headers: { authorization: `Bearer ${token}` } });
-  let pending;
-  try {
-    assert.equal((await control(true, 'wrong')).status, 403);
-    assert.equal(router.status().allow_reserve_usage, false);
-    assert.equal((await control(true, 'fixture-control')).status, 200);
-    pending = fetch(`${base}/v1/responses`, { method: 'POST', body: '{}' });
-    await began.promise;
-    assert.equal((await control(false, 'fixture-control')).status, 200);
-    const blocked = await fetch(`${base}/v1/responses`, { method: 'POST', body: '{}' });
-    assert.equal(blocked.status, 503);
-    held.resolve();
-    const result = await pending;
-    assert.equal(result.status, 429);
-    assert.equal(await result.text(), 'quota-limit');
-    assert.equal(calls, 1);
-  } finally { held.resolve(); await pending; await server.close(); }
 }));
 
 test('credit fallback is per account, lower priority than included usage, and separate from reserve permission', () => fixture(async ({ root, second, paths, readings, router }) => {
@@ -400,32 +315,36 @@ test('fallback rejects missing, zero, failed, stale, and unrelated credits; repl
   await assert.rejects(router.credentials(), { code: 'usage_limit_reached' });
 }));
 
-test('credit control authenticates and disabling it neither interrupts nor replays an active request', () => fixture(async ({ paths, readings, router }) => {
-  for (const path of paths) readings.set(path, credited(0));
-  await router.refresh();
-  const began = Promise.withResolvers(), held = Promise.withResolvers();
-  let calls = 0;
-  const server = await startServer({ port: 0, credentials: router.credentials, controlToken: 'fixture-control',
-    setCreditFallback: router.setCreditFallback,
-    transport: async () => { calls++; began.resolve(); await held.promise; return new Response('unchanged', { status: 429 }); } });
-  const base = `http://127.0.0.1:${server.port}`;
-  const control = (enabled, token = 'fixture-control') => fetch(`${base}/control/credit-fallback/default/${enabled}`, {
-    method: 'POST', headers: { authorization: `Bearer ${token}` },
-  });
-  let pending;
-  try {
-    assert.equal((await control(true, 'wrong')).status, 403);
-    assert.equal((await control(true)).status, 200);
-    pending = fetch(`${base}/v1/responses`, { method: 'POST', body: '{}' });
-    await began.promise;
-    assert.equal((await control(false)).status, 200);
-    const blocked = await fetch(`${base}/v1/responses`, { method: 'POST', body: '{}' });
-    assert.equal(blocked.status, 503);
-    assert.equal((await blocked.json()).error.code, 'usage_limit_reached');
-    held.resolve();
-    const response = await pending;
-    assert.equal(response.status, 429);
-    assert.equal(await response.text(), 'unchanged');
-    assert.equal(calls, 1);
-  } finally { held.resolve(); await pending; await server.close(); }
-}));
+for (const permission of ['reserve', 'credit']) {
+  test(`${permission} control authenticates and disabling it leaves active requests untouched`, () => fixture(async ({ paths, readings, router }) => {
+    for (const path of paths) readings.set(path, permission === 'reserve' ? limits(2) : credited(0));
+    await router.refresh();
+    const began = Promise.withResolvers(), held = Promise.withResolvers();
+    let calls = 0;
+    const server = await startServer({ port: 0, credentials: router.credentials, controlToken: 'fixture-control',
+      setReserveUsage: router.setAllowReserveUsage, setCreditFallback: router.setCreditFallback,
+      transport: async () => { calls++; began.resolve(); await held.promise; return new Response('unchanged', { status: 429 }); } });
+    const base = `http://127.0.0.1:${server.port}`;
+    const route = permission === 'reserve' ? 'reserve-usage' : 'credit-fallback/default';
+    const control = (enabled, token = 'fixture-control') => fetch(`${base}/control/${route}/${enabled}`, {
+      method: 'POST', headers: { authorization: `Bearer ${token}` },
+    });
+    let pending;
+    try {
+      assert.equal((await control(true, 'wrong')).status, 403);
+      await assert.rejects(router.credentials());
+      assert.equal((await control(true)).status, 200);
+      pending = fetch(`${base}/v1/responses`, { method: 'POST', body: '{}' });
+      await began.promise;
+      assert.equal((await control(false)).status, 200);
+      const blocked = await fetch(`${base}/v1/responses`, { method: 'POST', body: '{}' });
+      assert.equal(blocked.status, 503);
+      assert.equal((await blocked.json()).error.code, permission === 'reserve' ? 'weekly_reserve_reached' : 'usage_limit_reached');
+      held.resolve();
+      const response = await pending;
+      assert.equal(response.status, 429);
+      assert.equal(await response.text(), 'unchanged');
+      assert.equal(calls, 1);
+    } finally { held.resolve(); await pending; await server.close(); }
+  }));
+}

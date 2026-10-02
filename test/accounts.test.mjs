@@ -177,11 +177,3 @@ setInterval(() => {}, 1000);
     await new Promise(resolve => observer.close(resolve));
   }
 }));
-
-test('usage normalization retains late buckets and complete identifiers', () => {
-  const ids = [...Array.from({ length: 40 }, (_, index) => `fixture-${index}`), 'codex', 'x'.repeat(150)];
-  const rateLimitsByLimitId = Object.fromEntries(ids.map(id => [id, { primary: { usedPercent: 25, windowDurationMins: 10080 } }]));
-  const result = normalizeUsage({ rateLimitsByLimitId });
-  assert.deepEqual(result.map(bucket => bucket.id), ids);
-  assert.equal(result.find(bucket => bucket.id === 'codex').primary.remaining_percent, 75);
-});

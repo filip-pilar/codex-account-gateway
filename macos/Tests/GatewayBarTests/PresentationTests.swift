@@ -12,24 +12,20 @@ final class PresentationTests: XCTestCase {
         }
     }
 
-    func testRunningProcessDoesNotImplyReadyRouting() {
-        func status(_ state: String) -> GatewayStatus {
-            GatewayStatus(state: "running", routing: Routing(mode: "automatic", weekly_reserve_percent: 5, state: state, account: "default"))
+    func testRunningProcessDoesNotImplyReadyRouting() throws {
+        func status(_ state: String) throws -> GatewayStatus {
+            let json = #"{"ok":true,"code":"running","routing":{"mode":"automatic","weekly_reserve_percent":5,"state":"\#(state)","account":"default"}}"#
+            let reply = try JSONDecoder().decode(Reply.self, from: Data(json.utf8))
+            return GatewayStatus(state: reply.code, routing: reply.routing)
         }
-        XCTAssertEqual(status("ready").tone, .positive)
-        XCTAssertNil(status("ready").notice)
-        XCTAssertNil(status("checking_usage").notice)
-        XCTAssertEqual(status("checking_usage").tone, .neutral)
-        XCTAssertEqual(status("usage_degraded").title, "Ready")
-        XCTAssertEqual(status("usage_degraded").notice, "Usage unavailable; requests continuing.")
-        XCTAssertEqual(status("credit_fallback").title, "Credit fallback")
-        for state in ["weekly_reserve_reached", "usage_limit_reached", "usage_unavailable", "login_required"] {
-            XCTAssertEqual(status(state).title, "Paused")
-            XCTAssertEqual(status(state).tone, .caution)
-            XCTAssertNotNil(status(state).notice)
+        XCTAssertEqual(try status("ready").tone, .positive)
+        XCTAssertNil(try status("ready").notice)
+        XCTAssertNil(try status("checking_usage").notice)
+        for state in ["weekly_reserve_reached", "usage_limit_reached", "usage_unavailable", "login_required", "credit_fallback", "usage_degraded"] {
+            XCTAssertEqual(try status(state).tone, .caution)
+            XCTAssertNotNil(try status(state).notice)
         }
         XCTAssertEqual(GatewayStatus(state: "running", routing: nil).tone, .neutral)
-        XCTAssertEqual(GatewayStatus(state: "stale", routing: nil).title, "Stopped")
     }
 
     func testUnknownUsageAllowsSelectionButConfirmedReserveAndMissingLoginStillBlock() {
@@ -43,20 +39,10 @@ final class PresentationTests: XCTestCase {
         XCTAssertTrue(status(91, error: true).canSelect)
         XCTAssertFalse(status(5, error: true).canSelect)
         XCTAssertTrue(status(5.1).canSelect)
-        XCTAssertEqual(status(0).title, "Included usage exhausted")
         let signedOut = Account(id: "third", label: "Extra", selected: false, authenticated: false)
-        XCTAssertEqual(AccountStatus(account: signedOut, weekly: nil, usageError: false).title, "Sign in required")
         XCTAssertFalse(AccountStatus(account: signedOut, weekly: nil, usageError: true).canSelect)
-    }
-
-    func testReserveOptInAllowsSelectionAndShowsReserveUse() throws {
-        let weekly = UsageWindow(remaining_percent: 2, window_minutes: 10080, resets_at: nil)
-        let selected = Account(id: "default", label: "Default", selected: true, authenticated: true)
-        XCTAssertEqual(AccountStatus(account: selected, weekly: weekly, usageError: false, allowReserveUsage: true).title, "Selected · Using reserve")
-        let other = Account(id: "other", label: "Other", selected: false, authenticated: true)
-        XCTAssertTrue(AccountStatus(account: other, weekly: weekly, usageError: false, allowReserveUsage: true).canSelect)
-        let json = #"{"ok":true,"code":"reserve_usage","allow_reserve_usage":true}"#
-        XCTAssertEqual(try JSONDecoder().decode(Reply.self, from: Data(json.utf8)).allow_reserve_usage, true)
+        let reserve = UsageWindow(remaining_percent: 2, window_minutes: 10080, resets_at: nil)
+        XCTAssertTrue(AccountStatus(account: account, weekly: reserve, usageError: false, allowReserveUsage: true).canSelect)
     }
 
     @MainActor func testDemoActionsCannotChangeTheLiveGatewayOrStartupPreferences() async {

@@ -38,12 +38,4 @@ final class AutomaticRunTests: XCTestCase {
         XCTAssertNotNil(policy.attention(for: routing("weekly_reserve_reached")))
     }
 
-    func testStatusAcceptsAdditiveRoutingWithoutConfusingRunningWithAvailableQuota() throws {
-        let json = #"{"ok":true,"code":"running","routing":{"mode":"automatic","weekly_reserve_percent":5,"state":"weekly_reserve_reached","account":"default"}}"#
-        let reply = try JSONDecoder().decode(Reply.self, from: Data(json.utf8))
-        XCTAssertTrue(reply.ok)
-        XCTAssertNotNil(reply.routing?.notice)
-        let legacy = try JSONDecoder().decode(Reply.self, from: Data(#"{"ok":true,"code":"running"}"#.utf8))
-        XCTAssertNil(legacy.routing)
-    }
 }

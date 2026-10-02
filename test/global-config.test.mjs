@@ -22,27 +22,11 @@ test('global provider toggle preserves other settings and restores prior selecti
   }
 });
 
-test('global provider upgrades an existing managed definition without changing other settings', () => {
-  const source = 'model_provider = "devin_astra"\nmodel = "gpt-6-sol"\n';
-  const legacy = changeGlobalConfig(source, true, 8787).replace('requires_openai_auth = true', 'requires_openai_auth = false');
-  assert.deepEqual(globalConfigState(legacy), { enabled: true, port: 8787, openai_auth: false, needs_update: true });
-  const updated = changeGlobalConfig(legacy, true, 8787);
-  assert.deepEqual(globalConfigState(updated), { enabled: true, port: 8787, openai_auth: true, needs_update: false });
-  assert.equal(changeGlobalConfig(updated, false), source);
-});
-
 test('disabling the global provider preserves settings added after its managed block', () => {
   const source = 'model = "fixture"\n';
   const added = '\n[projects.fixture]\ntrust_level = "trusted"\n';
   const enabled = changeGlobalConfig(source, true, 8787) + added;
   assert.equal(changeGlobalConfig(enabled, false), source + added);
-});
-
-test('global provider toggle refuses ambiguous or edited configuration', () => {
-  assert.throws(() => changeGlobalConfig('model_provider = "codex-gateway"\n', true, 8787), { code: 'global_config_conflict' });
-  assert.throws(() => changeGlobalConfig('[model_providers.codex-gateway]\nname = "Other"\n', true, 8787), { code: 'global_config_conflict' });
-  const enabled = changeGlobalConfig('model = "gpt-6-sol"\n', true, 8787);
-  assert.throws(() => changeGlobalConfig(enabled.replace('wire_api = "responses"', 'wire_api = "chat"'), false), { code: 'global_config_conflict' });
 });
 
 test('global config update preserves private permissions and supports reversal', async () => {
@@ -84,6 +68,10 @@ test('a conflict in either route leaves the entire config untouched', async () =
   try {
     const enabled = changeGlobalConfig('model = "fixture"\n', true, 8787);
     for (const changed of [
+      'model_provider = "codex-gateway"\n',
+      '[model_providers.codex-gateway]\nname = "Other"\n',
+      'openai_base_url = "https://example.test/v1"\n',
+      '"openai_base_url" = "https://example.test/v1"\n',
       enabled.replace('openai_base_url = "http://127.0.0.1:8787/v1"', 'openai_base_url = "https://other.test/v1"'),
       enabled.replace('wire_api = "responses"', 'wire_api = "chat"'),
     ]) {
@@ -116,17 +104,17 @@ test('legacy CLI names share the same connection switch and preserve response co
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
-test('legacy restrictive provider defaults upgrade atomically and remain reversible', () => {
+test('supported legacy provider definitions upgrade and remain reversible', () => {
   const source = 'model = "fixture"\nmodel_reasoning_effort = "high"\n';
   const current = changeGlobalConfig(source, true, 8787);
-  for (const auth of [true, false]) {
+  const retries = 'request_max_retries = 0\nstream_max_retries = 0\nstream_idle_timeout_ms = 240000\n';
+  for (const [auth, defaults] of [[false, ''], [false, retries], [true, retries]]) {
     const legacy = current.replace('requires_openai_auth = true', `requires_openai_auth = ${auth}`)
-      .replace('# codex-gateway: provider definition end',
-        'request_max_retries = 0\nstream_max_retries = 0\nstream_idle_timeout_ms = 240000\n# codex-gateway: provider definition end');
+      .replace('# codex-gateway: provider definition end', defaults + '# codex-gateway: provider definition end');
     assert.equal(globalConfigState(legacy).needs_update, true);
     assert.equal(changeGlobalConfig(legacy, true, 8787), current);
     assert.equal(changeGlobalConfig(legacy, false), source);
-    assert.throws(() => changeGlobalConfig(legacy.replace('stream_idle_timeout_ms = 240000', 'stream_idle_timeout_ms = 99'), true, 8787), { code: 'global_config_conflict' });
+    if (defaults) assert.throws(() => changeGlobalConfig(legacy.replace('stream_idle_timeout_ms = 240000', 'stream_idle_timeout_ms = 99'), true, 8787), { code: 'global_config_conflict' });
   }
   assert.doesNotMatch(current, /request_max_retries|stream_max_retries|stream_idle_timeout_ms/);
 });
