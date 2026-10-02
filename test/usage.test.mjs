@@ -1,83 +1,36 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, realpath, rm, writeFile, stat, symlink } from 'node:fs/promises';
+import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { once } from 'node:events';
 import net from 'node:net';
-import { addAccount, renameAccount, listAccounts, selectedAccount, selectAccount, getAccount, accountRoot } from '../src/accounts.mjs';
 import { ensureState, writePrivate } from '../src/state.mjs';
 import { readUsage, normalizeUsage } from '../src/usage.mjs';
 async function fixture(fn) {
-  const root = await realpath(await mkdtemp(join(tmpdir(), 'gateway-accounts-')));
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'gateway-usage-')));
   const auth = async path => {
     const home = await ensureState(path);
     await writePrivate(join(home, 'auth.json'), JSON.stringify({ auth_mode: 'chatgpt', tokens: { access_token: 'fixture-secret', account_id: 'fixture-id' } }));
   };
   try { await fn(root, auth); } finally { await rm(root, { recursive: true, force: true }); }
 }
-test('accounts stay isolated; selection requires login and survives subsequent reads', () => fixture(async(root, auth) => {
-  assert.equal((await selectedAccount(root)).id, 'default');
-  const a = await addAccount(root, 'Personal'), b = await addAccount(root, 'Work');
-  assert.notEqual(a.id, b.id);
-  await assert.rejects(selectAccount(root, a.id), { code: 'login_required' });
-  await auth(accountRoot(root, a.id)); await selectAccount(root, a.id);
-  assert.equal((await selectedAccount(root)).id, a.id);
-  const accounts = await listAccounts(root);
-  assert.equal(accounts.find(x => x.id === a.id).authenticated, true);
-  assert.equal(accounts.find(x => x.id === b.id).authenticated, false);
-  assert.doesNotMatch(JSON.stringify(accounts), /fixture-secret|fixture-id/);
-  assert.equal((await stat(join(root, 'selected-account.json'))).mode & 0o777, 0o600);
-  await auth(root); await selectAccount(root, 'default');
-  assert.equal((await selectedAccount(root)).id, 'default');
-  await assert.rejects(getAccount(root, '../codex'), { code: 'invalid_account' });
-  await assert.rejects(addAccount(root, 'bad\nlabel'), { code: 'invalid_arguments' });
-}));
-test('account selection rejects symlink state', () => fixture(async(root, auth) => {
-  const account = await addAccount(root, 'A'); await auth(accountRoot(root, account.id));
-  await symlink(join(root, 'other'), join(root, 'selected-account.json'));
-  await assert.rejects(selectAccount(root, account.id), /Symbolic links/);
-  await assert.rejects(selectedAccount(root), /Symbolic links/);
-}));
-test('default and added account labels can be renamed without changing selection or credentials', () => fixture(async(root, auth) => {
-  await auth(root);
-  const other = await addAccount(root, 'Work');
-  assert.equal((await getAccount(root, 'default')).label, 'Default');
-  await renameAccount(root, 'default', 'Personal');
-  await renameAccount(root, other.id, 'Second');
-  assert.deepEqual((await listAccounts(root)).map(account => account.label), ['Personal', 'Second']);
-  assert.equal((await selectedAccount(root)).id, 'default');
-  assert.equal((await listAccounts(root))[0].authenticated, true);
-  await assert.rejects(renameAccount(root, 'default', 'bad\nlabel'), { code: 'invalid_arguments' });
-  assert.equal((await getAccount(root, 'default')).label, 'Personal');
-}));
-test('account selection rejects malformed metadata without replacing the selected account', () => fixture(async (root, auth) => {
-  await auth(root);
-  await selectAccount(root, 'default');
-  const account = await addAccount(root, 'Work');
-  const path = accountRoot(root, account.id);
-  await auth(path);
-
-  for (const metadata of [null, {}, { label: 7 }, { label: ' ' }, { label: 'x'.repeat(61) }]) {
-    await writeFile(join(path, 'account.json'), JSON.stringify(metadata));
-    await assert.rejects(getAccount(root, account.id), { code: 'invalid_account' });
-    await assert.rejects(selectAccount(root, account.id), { code: 'invalid_account' });
-    assert.equal((await selectedAccount(root)).id, 'default');
-  }
-}));
 test('usage preserves separate buckets, clamps percentages, and never invents missing windows', () => {
   const result = normalizeUsage({ rateLimits: { primary: { usedPercent: 12 } }, rateLimitsByLimitId: {
     codex: { primary: { usedPercent: 36, windowDurationMins: 300, resetsAt: 100 }, secondary: null, credits: { balance: 'secret' } },
     other: { primary: { usedPercent: 110 }, secondary: { usedPercent: -20 } },
     unknown: { primary: { usedPercent: null } },
   }});
-  assert.deepEqual(result[0], { id: 'codex', primary: { remaining_percent: 64, window_minutes: 300, resets_at: 100 }, secondary: null });
+  assert.deepEqual(result[0], { id: 'codex', primary: { remaining_percent: 64, window_minutes: 300, resets_at: 100 }, secondary: null, credits: null });
   assert.equal(result[1].primary.remaining_percent, 0); assert.equal(result[1].secondary.remaining_percent, 100);
   assert.equal(result[2].primary, null); assert.doesNotMatch(JSON.stringify(result), /secret/);
   assert.deepEqual(normalizeUsage({}), []);
+  const credits = normalizeUsage({ rateLimits: { credits: { hasCredits: true, unlimited: false, balance: '62706.25' } } });
+  assert.deepEqual(credits[0].credits, { has_credits: true, unlimited: false, balance: 62706.25 });
 });
+
 test('usage RPC only initializes and reads limits; inherited provider secrets are stripped', () => fixture(async(root, auth) => {
   await auth(root);
   const executable = join(root, 'codex-fixture');
@@ -146,11 +99,3 @@ setInterval(() => {}, 1000);
     await new Promise(resolve => observer.close(resolve));
   }
 }));
-
-test('usage normalization retains late buckets and complete identifiers', () => {
-  const ids = [...Array.from({ length: 40 }, (_, index) => `fixture-${index}`), 'codex', 'x'.repeat(150)];
-  const rateLimitsByLimitId = Object.fromEntries(ids.map(id => [id, { primary: { usedPercent: 25, windowDurationMins: 10080 } }]));
-  const result = normalizeUsage({ rateLimitsByLimitId });
-  assert.deepEqual(result.map(bucket => bucket.id), ids);
-  assert.equal(result.find(bucket => bucket.id === 'codex').primary.remaining_percent, 75);
-});

@@ -210,7 +210,7 @@ struct GatewayView: View {
 
     private func accountRow(_ account: Account) -> some View {
         let weekly = model.usages[account.id]?.weeklyWindow
-        let state = AccountStatus(account: account, weekly: weekly, usageError: model.usageErrors[account.id] != nil, allowReserveUsage: model.allowReserveUsage)
+        let state = AccountStatus(account: account, weekly: weekly, usageError: model.usageErrors[account.id] != nil, allowReserveUsage: model.allowReserveUsage, usage: model.usages[account.id])
         return Button { page = .account(account.id) } label: {
             HStack(spacing: 10) {
                 Image(systemName: account.selected ? "checkmark.circle.fill" : "person.crop.circle")
@@ -275,6 +275,9 @@ struct GatewayView: View {
                             if index > 0 { Divider() }
                             usageWindow(window)
                         }
+                        Divider()
+                        LabeledContent("Credits", value: bucket.credits?.balanceText ?? "Unavailable")
+                            .font(.callout).monospacedDigit()
                     }.card()
                 }
                 Text(usage.checkedText + (model.usageErrors[account.id] == nil ? "" : " · Out of date")).font(.caption).foregroundStyle(.secondary)
@@ -282,6 +285,15 @@ struct GatewayView: View {
                 Text(model.checkingUsage ? "Checking usage…" : "Usage unavailable.")
                     .font(.callout).foregroundStyle(.secondary).card()
             }
+            VStack(alignment: .leading, spacing: 10) {
+                Toggle("Allow credit fallback", isOn: Binding(get: { account.allowsCreditFallback }, set: { enabled in
+                    Task { await model.setCreditFallback(account, enabled: enabled) }
+                }))
+                    .toggleStyle(.switch).controlSize(.small).disabled(model.busy || model.isDemo)
+                    .help("Allow this account to continue into credits when other included usage is unavailable. No restart needed.")
+                Text("Prefer included usage, then allow this account to continue through its reserve into available credits. OpenAI controls billing; delayed usage reports and active requests mean this is not a spending cap.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }.card()
             HStack {
                 Button("Rename…") { draft = account.label; page = .rename(account.id) }
                 Spacer()
@@ -327,7 +339,7 @@ struct GatewayView: View {
                 }.toggleStyle(.switch).controlSize(.small).disabled(model.busy)
                     .accessibilityLabel("Allow reserve usage")
                     .help("Continue below 5% when all accounts reach the weekly reserve. No restart needed.")
-                Text("Prefer accounts above 5%, then continue on the selected account. Account usage limits still apply.")
+                Text("Prefer accounts above 5%, then use remaining included allowance. Continuing past reported limits requires credit fallback on that account.")
                     .font(.caption).foregroundStyle(.secondary)
                 Divider()
                 Toggle(isOn: Binding(get: { model.globalEnabled }, set: { enabled in
@@ -389,7 +401,6 @@ struct GatewayView: View {
         }
     }
     private func feedback(_ message: String) -> some View {
-        // Append feedback after the controls: no empty slot and no controls pushed down.
         HStack(alignment: .top, spacing: 8) {
             Image(systemName: model.isError ? "exclamationmark.circle.fill" : "checkmark.circle")
                 .foregroundStyle(model.isError ? Color.orange : .secondary)
@@ -422,7 +433,7 @@ struct GatewayView: View {
                     .help("Quits the menu app. The gateway stays running; automatic monitoring stops.")
             case .account(let id):
                 if let account = model.accounts.first(where: { $0.id == id }) {
-                    let state = AccountStatus(account: account, weekly: model.usages[id]?.weeklyWindow, usageError: model.usageErrors[id] != nil, allowReserveUsage: model.allowReserveUsage)
+                    let state = AccountStatus(account: account, weekly: model.usages[id]?.weeklyWindow, usageError: model.usageErrors[id] != nil, allowReserveUsage: model.allowReserveUsage, usage: model.usages[id])
                     if account.selected && account.authenticated {
                         Label("Selected account", systemImage: "checkmark.circle.fill").foregroundStyle(.secondary)
                         Spacer()
@@ -434,7 +445,7 @@ struct GatewayView: View {
                         if account.authenticated {
                             Button("Use This Account") { Task { await model.action(["account-select", "--account", id]) } }
                                 .buttonStyle(.borderedProminent).disabled(model.busy || !state.canSelect)
-                                .help(state.canSelect ? "Use this account for future requests" : "This account has reached the weekly reserve")
+                                .help(state.canSelect ? "Use this account for future requests" : "This account has no eligible usage")
                         } else {
                             Button("Sign In…") { model.login(account) }
                                 .buttonStyle(.borderedProminent).disabled(model.busy)

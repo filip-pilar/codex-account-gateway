@@ -22,6 +22,7 @@ Invoke `node src/cli.mjs COMMAND`. No global installation is required. `CODEX_GA
 | `openai-route-disable` | none | Compatibility alias for `global-disable` |
 | `usage` | `--account ID` | One-off diagnostic read through official CLI app-server; no inference |
 | `reserve-usage` | optional `--enabled true\|false` | Read or persist reserve usage permission; applies immediately to a running gateway |
+| `credit-fallback` | required `--account ID`; optional `--enabled true\|false` | Read or persist per-account credit fallback; applies immediately while running |
 | `usage-status` | `--refresh` | Read the running gateway’s shared usage cache; optionally request a background refresh |
 | `help` | `--json` | Usage |
 
@@ -55,7 +56,7 @@ Exit 0: requested operation succeeded. Exit 1: operational failure or unmet read
 | `invalid_limits` | Correct the private profile's `limits.json`; see transport limits below |
 | `openai_route_conflict` | Inspect the user-level config; an existing override or changed managed block was left untouched |
 
-`doctor` includes `profile`, Node support/version, parsed CLI version and historical-baseline match, credential presence, runtime state, lifecycle lock presence, selected port availability, and `next_action`. A different CLI version is reported, not blocked: it is unverified rather than necessarily incompatible. A present or unsafe lifecycle lock makes local readiness fail and requests private-state inspection; the diagnostic never removes it. A free port check is advisory; `start` is the authoritative bind check. `doctor` does not establish that gateway/client configuration match.
+`doctor` includes `profile`, Node support/version, parsed CLI version, credential presence, runtime state, lifecycle lock presence, selected port availability, and `next_action`. CLI version differences do not block startup. A present or unsafe lifecycle lock makes local readiness fail and requests private-state inspection; the diagnostic never removes it. A free port check is advisory; `start` is the authoritative bind check. `doctor` does not establish that gateway/client configuration match.
 
 `setup` validates a simple model identifier and requires an explicitly named model. Creation requires a new directory with an existing parent, rejects symlink parents and overlap with gateway state, this repository, or the current client home, and writes private configuration exclusively. It does not modify existing files. `launch` contains executable, args, env, and unset_env fields; `launch_command` is a POSIX shell equivalent. Remove inherited provider API key/base URL overrides when launching.
 
@@ -65,11 +66,11 @@ Exit 0: requested operation succeeded. Exit 1: operational failure or unmet read
 
 Both settings are validated and written atomically in `~/.codex/config.toml`. Edited markers and unmanaged overrides are refused; authentication, `chatgpt_base_url`, models, and task histories are untouched. Use the running gateway's port from `status --json`; the default is 8787. `global-status` returns `enabled: true` when either managed route exists and `needs_update: true` when they are incomplete or inconsistent. Enable again to repair them, or disable to remove both. The Mac app shows **Update Connection** when needed.
 
-The older `openai-route-*` commands are aliases for these same operations, retaining their JSON response codes and `route` field. They no longer toggle a separate setting.
+`openai-route-*` aliases use their own JSON response codes and `route` field for the same connection settings.
 
-The gateway serves HTTP streaming. WebSocket handshakes receive HTTP 426 so compatible Codex engines switch to HTTP immediately. See [verification](verification.md) for tested scope.
+The gateway serves HTTP streaming. WebSocket handshakes receive HTTP 426 so compatible Codex engines switch to HTTP immediately. See [verification](verification.md) for local and live checks.
 
-Generated provider definitions inherit Codex's retry and stream-idle defaults; the gateway itself never retries inference. New isolated clients also inherit reasoning and update-check defaults. An exact older managed provider block that disabled retries or set a four-minute stream-idle timeout appears as `needs_update: true`; `global-enable` upgrades that block while preserving other configuration. Restart Codex to load the change. Edited blocks still require manual inspection. Separately created client folders are never rewritten.
+Generated provider definitions inherit Codex's retry and stream-idle defaults; the gateway itself never retries inference. `global-enable` updates recognized managed blocks while preserving unrelated configuration. Edited blocks require manual inspection. Separately created client folders are never rewritten.
 
 ## Transport limits
 
@@ -83,13 +84,13 @@ For larger requests or longer idle periods, create a private (mode 600), non-sym
 {"max_request_bytes":536870912,"idle_timeout_ms":1800000,"max_header_bytes":1048576}
 ```
 
-All fields are optional and must be positive safe integers; unknown fields are rejected. Idle timeout and header size must fit a signed 32-bit integer. Zero does not disable a limit. The CLI and Mac app read this file when starting the backend, so stop/start the gateway after editing it. `doctor --json` reports configured `limits` or `limits_error`; `status --json` reports the running instance's effective `limits` and `active_requests`. A running older backend may omit these additive fields. HTTP headers must arrive within 60 seconds; stalled local control operations retain their separate short deadlines.
+All fields are optional and must be positive safe integers; unknown fields are rejected. Idle timeout and header size must fit a signed 32-bit integer. Zero does not disable a limit. The CLI and Mac app read this file when starting the backend, so stop/start the gateway after editing it. `doctor --json` reports configured `limits` or `limits_error`; `status --json` reports the running instance's effective `limits` and `active_requests`. HTTP headers must arrive within 60 seconds; stalled local control operations retain their separate short deadlines.
 
 ## Conservative recovery
 
-Normal crash recovery is automatic, serialized, and never signals an unverified PID. A reused PID can conservatively block recovery. Legacy runtime files without identity/PID metadata and invalid files are not guessed at.
+Normal crash recovery is automatic, serialized, and never signals an unverified PID. A reused PID can conservatively block recovery. Runtime files with missing or invalid identity/PID metadata require inspection.
 
-A lifecycle lock exists only during brief state mutations. Concurrent commands wait up to three seconds. If a process dies during that critical section, the lock deliberately remains. Retry status/doctor first. If the lock persists, establish that all gateway processes for this profile have stopped before removing **only the empty `lifecycle.lock` directory**. Likewise, remove corrupt/legacy `runtime.json` only after establishing no instance remains. These exceptional cases need operator/agent investigation; never remove `codex/` or read credentials into diagnostics. Do not use PID existence alone as proof that a process is a gateway.
+A lifecycle lock exists only during brief state mutations. Concurrent commands wait up to three seconds. If a process dies during that critical section, the lock deliberately remains. Retry status/doctor first. If the lock persists, establish that all gateway processes for this profile have stopped before removing **only the empty `lifecycle.lock` directory**. Likewise, remove invalid `runtime.json` only after establishing no instance remains. These exceptional cases need operator/agent investigation; never remove `codex/` or read credentials into diagnostics. Do not use PID existence alone as proof that a process is a gateway.
 
 Background mode is a detached Node process with no body/error log file and no restart supervisor. `stop` waits up to five seconds for owned state cleanup. Shutdown cancels in-flight work. Use foreground mode under an existing process supervisor if one is already available; installing a service is outside this CLI.
 
@@ -104,11 +105,11 @@ node src/cli.mjs account-select --account RETURNED_ID --json
 node src/cli.mjs usage --account RETURNED_ID --json
 ```
 
-New success codes: `accounts`, `account_added`, `account_selected`, `usage`. New failure codes: `invalid_account`, `gateway_busy`, `account_switch_failed`, `usage_unavailable`, `usage_timeout`. `login_required` and `cli_unavailable` retain their meaning. Switching a running gateway uses its authenticated control endpoint and preserves the address. It returns `gateway_busy` while a request or selection is in progress; there is no queued switch or automatic retry. New inference requests during the brief selection mutation receive HTTP 503 / `account_switch_in_progress`.
+Success codes: `accounts`, `account_added`, `account_selected`, `usage`. Failure codes: `invalid_account`, `gateway_busy`, `account_switch_failed`, `usage_unavailable`, `usage_timeout`. `login_required` and `cli_unavailable` retain their meaning. Switching a running gateway uses its authenticated control endpoint and preserves the address. It returns `gateway_busy` while a request or selection is in progress; there is no queued switch or automatic retry. New inference requests during the brief selection mutation receive HTTP 503 / `account_switch_in_progress`.
 
-`usage` returns `account`, `checked_at` (ISO timestamp), and `buckets`. Each bucket has `id`, `primary`, and `secondary`; each available window has `remaining_percent`, nullable `window_minutes`, and nullable `resets_at` (Unix seconds). Missing windows are null. Upstream messages, credentials, credits, and unrelated protocol notifications are never printed. Each read has a 15-second deadline and 1 MiB output cap. The official CLI owns authentication and renewal. This one-off diagnostic does not update a running gateway; use `usage-status --refresh` to refresh its routing readings. Usage errors include a safe `category` when available; RPC messages and stderr remain private.
+`usage` returns `account`, `checked_at` (ISO timestamp), and `buckets`. Each bucket has `id`, `primary`, `secondary`, and nullable `credits`; each available window has `remaining_percent`, nullable `window_minutes`, and nullable `resets_at` (Unix seconds). Credits contain `has_credits`, `unlimited`, and nullable numeric `balance`. Missing data stays null; balances from distinct buckets are never summed. Upstream messages, credentials, and unrelated protocol notifications are never printed. Each read has a 15-second deadline and 1 MiB output cap. The official CLI owns authentication and renewal. This one-off diagnostic does not update a running gateway; use `usage-status --refresh` to refresh its routing readings. Usage errors include a safe `category` when available; RPC messages and stderr remain private.
 
-`usage-status` requires a verified running gateway and returns `code: "usage_status"`, `routing`, and `usage_status`. The latter contains `checking`, nullable `next_check_at`, and an `accounts` array. Each entry contains `account`, nullable `checked_at`, `buckets`, `stale`, and `diagnostics` (`last_attempt_at`, `last_success_at`, `last_error`, `consecutive_failures`). Error categories distinguish timeouts, missing CLI/login, RPC/protocol failures, missing weekly data, and expired reports without exposing upstream text. `--refresh` starts or joins the shared background check and returns immediately; poll without the flag to read its result. Local control failures return `runtime_unavailable` or `usage_status_unavailable`.
+`usage-status` requires a verified running gateway and returns `code: "usage_status"`, `routing`, and `usage_status`. The latter contains `checking`, nullable `next_check_at`, and an `accounts` array. Each entry contains `account`, nullable `checked_at`, `buckets`, `stale`, `included_usage_exhausted`, and `diagnostics` (`last_attempt_at`, `last_success_at`, `last_error`, `consecutive_failures`). Confirmed window exhaustion is retained until a fresh reading of that same window clears it; partial reports and elapsed reset times cannot clear it. Error categories distinguish timeouts, missing CLI/login, RPC/protocol failures, missing weekly data, and expired reports without exposing upstream text. `--refresh` starts or joins the shared background check and returns immediately; poll without the flag to read its result. Local control failures return `runtime_unavailable` or `usage_status_unavailable`.
 
 Selection is stored privately in `selected-account.json`. Added profile metadata and official CLI state live under `accounts/<id>/`. Selection writes are atomic and serialized through the gateway lifecycle lock. No existing authentication is moved or copied. See [macOS UI](macos.md).
 
@@ -116,21 +117,21 @@ Selection is stored privately in `selected-account.json`. Added profile metadata
 
 Every running gateway checks all signed-in accounts at startup and every 60 seconds after the preceding successful check finishes, with at most three usage CLI children at once. If no account supplies a valid reading, retries back off to two, four, then five minutes. Explicit `usage-status --refresh` requests a check immediately; concurrent refreshes share the same check. Inference requests never trigger or wait for usage reads.
 
-The selected signed-in account stays selected unless its last valid weekly reading is at or below 5%. At that reserve, the next account with fresh usage above 5% is preferred in list order, wrapping around; accounts with unknown usage are fallback candidates. An account with unknown or stale usage can keep serving requests. Selection persists across restarts. Other limit windows are not switching triggers.
+The selected signed-in account stays selected unless its last valid weekly reading is at or below 5%, or any included-usage window in its core bucket is exhausted. The next account with fresh usage above 5% is preferred in list order, wrapping around; accounts with unknown usage remain candidates. An account with unknown or stale usage can keep serving requests unless a retained reading confirms reserve or exhaustion. Selection persists across restarts. Exhausted short windows also trigger switching; unrelated buckets do not.
 
 Only a reported seven-day window from the `codex` bucket (or the sole reported bucket) qualifies. Missing/ambiguous data and expired reports do not replace a valid snapshot. A reading becomes stale after five minutes or its reported reset time. A confirmed reserve remains in effect until a valid new reading clears it; the clock alone does not create quota. Snapshots are memory-only, so after restart an account's usage is initially unknown. While usage is unavailable, continued requests may consume into the intended 5% reserve. This is an availability preference, not a strict spending cap.
 
 Requests already in progress retain their captured credentials and finish normally. No bodies, encrypted reasoning, or client turn-state headers are rewritten; there is no turn tracking or inference replay. Actual upstream login and rate-limit failures are returned without retrying inference.
 
-`status --json` retains its existing runtime codes and adds `routing`:
+`status --json` includes `routing`:
 
 ```json
 {"mode":"automatic","weekly_reserve_percent":5,"allow_reserve_usage":false,"state":"ready","account":"default"}
 ```
 
-Routing states include `checking_usage`, `ready`, `usage_degraded`, `weekly_reserve_reached`, `usage_unavailable`, and `login_required`. `usage_degraded` means requests continue but usage is stale, missing, or the last check failed. A runtime can be `running` while routing is paused. By default, all signed-in accounts confirmed at reserve return HTTP 503 / `weekly_reserve_reached` without contacting upstream; missing credentials retains HTTP 401 / `isolated_login_required`. Usage-fetch failures alone do not pause routing. `usage_unavailable` is retained for lifecycle/control failures and compatibility. Background checks resume routing when a reserve is cleared. Manual selection cannot bypass a confirmed reserve while reserve usage is disabled.
+Routing states include `checking_usage`, `ready`, `usage_degraded`, `credit_fallback`, `weekly_reserve_reached`, `usage_limit_reached`, `usage_unavailable`, and `login_required`. `usage_degraded` means requests continue but usage is stale, missing, or the last check failed. `credit_fallback` means routing is using a permitted credit candidate; it does not confirm a charge. A runtime can be `running` while routing is paused. With no eligible candidate, confirmed exhaustion returns HTTP 503 / `usage_limit_reached`; otherwise all accounts at reserve return HTTP 503 / `weekly_reserve_reached`. Missing credentials retains HTTP 401 / `isolated_login_required`. Usage-fetch failures alone do not pause otherwise eligible accounts. `usage_unavailable` is retained for lifecycle/control failures and compatibility. Background checks resume routing when usage becomes eligible. Manual selection is subject to the same policy on subsequent requests.
 
-Shutdown aborts usage reads and terminates their owned CLI children. Usage snapshots are memory-only. The Mac app's opt-in login item and restart monitoring are described in [automatic operation](macos.md#automatic-operation); the CLI does not install a service.
+Shutdown aborts usage reads and terminates their owned CLI children. The Mac app's opt-in login item and restart monitoring are described in [automatic operation](macos.md#automatic-operation); the CLI does not install a service.
 
 ## Reserve usage override
 
@@ -138,4 +139,14 @@ Shutdown aborts usage reads and terminates their owned CLI children. Usage snaps
 
 The setting is stored privately in `reserve-usage.json` in the backing profile and survives restarts. Changes use authenticated local control while running and apply to subsequent requests immediately, without restarting Codex or the gateway. `routing.allow_reserve_usage` reports the active policy. A stopped gateway loads the saved setting at startup.
 
-With permission enabled, normal automatic switching still prefers eligible accounts above 5% (then unknown usage). Only when those candidates are unavailable does it use accounts at the reserve, starting with the selected account. Even a reported 0% is forwarded: upstream limits remain authoritative, errors are returned unchanged, and no request is retried or replayed. Turning permission off restores the reserve for new requests; existing requests finish on their captured credentials.
+With permission enabled, normal automatic switching still prefers eligible accounts above 5% (then unknown usage). Only when those candidates are unavailable does it use accounts with included allowance at the reserve, starting with the selected account. A reported 0% requires separate per-account credit permission and available credits. Upstream errors remain unchanged; no request is retried or replayed. Turning permission off restores the reserve for new requests except on eligible credit-fallback accounts; existing requests finish on their captured credentials.
+
+## Credit fallback
+
+`credit-fallback --account ID --json` reads `allow_credit_fallback`, defaulting to `false`. Add `--enabled true` or `--enabled false` to change it. Success returns `code: "credit_fallback"`, `account`, and `allow_credit_fallback`. `accounts` includes the permission for each profile. A running backend without support or a failed update returns `credit_fallback_unavailable` without silently changing the saved preference.
+
+The private `credit-fallback.json` file lives in that account's profile directory. Updates use authenticated local control while running and affect only subsequent requests. Renaming an account does not alter its permission.
+
+Routing prefers accounts above reserve, then unknown usage, then remaining included reserve if globally allowed, then opted-in credit candidates. Credit candidates require a fresh, successful core-bucket usage report with `unlimited: true` or `has_credits: true` and no explicit zero balance. Missing, stale, failed, or expired credit reports cannot enable fallback. Credit permission also allows consuming that account's remaining reserve, because OpenAI determines when included allowance ends and credit billing begins. No credits are purchased or reset credits consumed.
+
+This is a routing preference, not a billing switch or spending cap. Unknown usage still permits requests under the availability policy, including during startup. Delayed telemetry, activity outside the gateway, and active requests can consume credits even when fallback is off.

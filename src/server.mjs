@@ -8,7 +8,7 @@ const headersToForward = ['content-type','content-encoding','content-length','ac
 const responseHeadersToForward = ['content-type', 'content-encoding', 'content-length', 'retry-after', 'retry-after-ms', 'x-request-id', 'x-codex-turn-state', 'x-codex-routing-hint'];
 const routes = new Map(['/responses','/responses/compact','/alpha/search','/images/generations','/images/edits'].map(p => ['/v1'+p, 'https://chatgpt.com/backend-api/codex'+p]));
 const equal = (a,b) => typeof a === 'string' && Buffer.byteLength(a) === Buffer.byteLength(b) && timingSafeEqual(Buffer.from(a),Buffer.from(b));
-export async function startServer({port=8787, credentials, transport=requestUpstream, controlToken, instanceId = 'fixture', onStop=()=>{}, onSelect=null, routingStatus=()=>undefined, usageStatus=null, refreshUsage=null, setReserveUsage=null, maxBytes=DEFAULT_LIMITS.max_request_bytes, timeoutMs=DEFAULT_LIMITS.idle_timeout_ms, maxHeaderBytes=DEFAULT_LIMITS.max_header_bytes}) {
+export async function startServer({port=8787, credentials, transport=requestUpstream, controlToken, instanceId = 'fixture', onStop=()=>{}, onSelect=null, routingStatus=()=>undefined, usageStatus=null, refreshUsage=null, setReserveUsage=null, setCreditFallback=null, maxBytes=DEFAULT_LIMITS.max_request_bytes, timeoutMs=DEFAULT_LIMITS.idle_timeout_ms, maxHeaderBytes=DEFAULT_LIMITS.max_header_bytes}) {
   const limits = validateLimits({ max_request_bytes: maxBytes, idle_timeout_ms: timeoutMs, max_header_bytes: maxHeaderBytes });
   const active = new Set();
   let selecting = false;
@@ -46,6 +46,18 @@ export async function startServer({port=8787, credentials, transport=requestUpst
         res.setHeader('cache-control', 'no-store');
         res.end(JSON.stringify({ instanceId, routing }));
       } catch { fail(503, 'reserve_usage_unavailable'); }
+      return;
+    }
+    const credit = /^\/control\/credit-fallback\/(default|[a-f0-9]{24})\/(true|false)$/.exec(req.url);
+    if (credit && req.method === 'POST') {
+      if (!controlToken || !equal(req.headers.authorization, `Bearer ${controlToken}`)) return fail(403, 'invalid_control_token');
+      if (!setCreditFallback) return fail(501, 'credit_fallback_unavailable');
+      try {
+        const result = await setCreditFallback(credit[1], credit[2] === 'true');
+        res.setHeader('content-type', 'application/json');
+        res.setHeader('cache-control', 'no-store');
+        res.end(JSON.stringify({ instanceId, ...result }));
+      } catch { fail(503, 'credit_fallback_unavailable'); }
       return;
     }
     if ((req.url === '/control/stop' && req.method === 'POST') || (req.url === '/control/status' && req.method === 'GET')) {
@@ -107,7 +119,7 @@ export async function startServer({port=8787, credentials, transport=requestUpst
       let auth;
       try { auth = await credentials(); }
       catch (e) {
-        if (['weekly_reserve_reached', 'usage_unavailable'].includes(e.code)) return fail(503, e.code);
+        if (['weekly_reserve_reached', 'usage_limit_reached', 'usage_unavailable'].includes(e.code)) return fail(503, e.code);
         return fail(401, 'isolated_login_required');
       }
       controller.signal.throwIfAborted();

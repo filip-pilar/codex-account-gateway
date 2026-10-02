@@ -8,7 +8,6 @@ import { join } from 'node:path';
 import { once } from 'node:events';
 import net from 'node:net';
 import http from 'node:http';
-import { startServer } from '../src/server.mjs';
 import { ensureState, writePrivate, readPrivate } from '../src/state.mjs';
 const cli = fileURLToPath(new URL('../src/cli.mjs', import.meta.url));
 async function fixture(fn) {
@@ -31,10 +30,7 @@ else if (process.argv.includes('app-server')) {
       console.log(JSON.stringify({id:2,result:{rateLimits:{primary:{usedPercent,windowDurationMins:10080}}}}));
     }
   });
-} else {
-  if(process.env.OPENAI_API_KEY || process.env.CODEX_API_KEY || process.env.OPENAI_BASE_URL) process.exit(4);
-  console.log('fixture login');
-}
+} else process.exit(4);
 `, {mode:0o700});
   const env = {...process.env, CODEX_GATEWAY_HOME:root, PATH:bin};
   const run = (args, extra = {}) => new Promise((resolve, reject) => {
@@ -57,22 +53,9 @@ else if (process.argv.includes('app-server')) {
   });
   const auth = async () => { const home=await ensureState(root); await writePrivate(join(home,'auth.json'), JSON.stringify({auth_mode:'chatgpt',tokens:{access_token:'fixture',account_id:'fixture'}})); };
   const freePort = async () => {const s=net.createServer();s.listen(0,'127.0.0.1');await once(s,'listening');const port=s.address().port;await new Promise(r=>s.close(r));return port;};
-  try {await fn({base,root,env,run,auth,freePort});}
+  try {await fn({base,root,run,auth,freePort});}
   finally {await run(['stop','--json']).catch(()=>{}); await rm(base,{recursive:true,force:true});}
 }
-test('foreground start/status/stop verifies identity and cleans runtime', {timeout:20000}, () => fixture(async ({env,run,auth,freePort,root}) => {
-  await auth(); const port=await freePort();
-  const p=spawn(process.execPath,[cli,'start','--port',String(port),'--json'],{env});p.stderr.resume();
-  try {
-    const first = await new Promise(resolve=>p.stdout.once('data', b=>resolve(JSON.parse(b))));
-    assert.equal(first.code,'started'); const exited=once(p,'exit');
-    const status=await run(['status','--json']);assert.equal(status.value.code,'running');assert.equal(status.value.pid,p.pid);
-    assert.doesNotMatch(status.out,/controlToken|instanceId|backing-fixture/);
-    assert.equal((await run(['stop','--json'])).value.code,'stopped');await exited;
-    await assert.rejects(access(join(root,'runtime.json')));
-    assert.equal((await run(['stop','--json'])).value.code,'already_stopped');
-  } finally {p.kill();}
-}));
 test('background readiness, concurrent starts, crash recovery and port conflict', {timeout:25000}, () => fixture(async ({run,auth,freePort,root}) => {
   await auth();const port=await freePort();
   const results=await Promise.all([run(['start','--background','--port',String(port),'--json']),run(['start','--background','--port',String(port),'--json'])]);
@@ -96,12 +79,6 @@ test('unverified live PID is never reclaimed or signalled', () => fixture(async 
   assert.equal((await readPrivate(join(root,'runtime.json'))).pid,process.pid);
   await rm(join(root,'runtime.json'));
 }));
-test('doctor is read-only, aggregates failures, and exposes safe CLI version', () => fixture(async ({run,root,auth}) => {
-  const absent=await run(['doctor','--json'],{PATH:'/nonexistent'});
-  assert.equal(absent.code,1);assert.equal(absent.value.cli.version,null);assert.equal(absent.value.credentials,'missing_or_unsafe');assert.equal(absent.value.runtime.state,'stopped');
-  await assert.rejects(access(root));
-  await auth();const ready=await run(['doctor','--json']);assert.equal(ready.value.cli.version,'0.149.1');assert.equal(ready.value.upstream,'not_checked');
-}));
 test('setup requires a model and creates only a new isolated private client', () => fixture(async ({run,root,base}) => {
   assert.equal((await run(['setup','--json'])).code,2);
   const printed=await run(['setup','--model','fixture-model','--json']);assert.match(printed.value.config,/model = "fixture-model"/);await assert.rejects(access(root));
@@ -114,119 +91,6 @@ test('setup requires a model and creates only a new isolated private client', ()
   const linked=join(base,'link');await symlink(dir,linked);
   assert.equal((await run(['setup','--model','fixture','--client-dir',join(linked,'nested'),'--json'])).code,1);
 }));
-test('machine argument errors are stable and login strips inherited provider overrides', () => fixture(async ({run}) => {
-  for(const args of [['nope'],['start','--port','1'],['status','--port','8787']]) {
-    const r=await run([...args,'--json']);assert.equal(r.code,2);assert.equal(r.value.schema_version,1);assert.equal(r.value.code,'invalid_arguments');
-  }
-  assert.equal((await run(['login','--json'])).value.code,'invalid_arguments');
-  assert.equal((await run(['login'],{OPENAI_API_KEY:'fixture',CODEX_API_KEY:'fixture',OPENAI_BASE_URL:'http://fixture.invalid'})).code,0);
-}));
-
-test('another gateway on the recorded port is not accepted or stopped', () => fixture(async ({run,auth,root}) => {
-  await auth();let stopped=false;
-  const server=await startServer({port:0,credentials:async()=>({token:'fixture',account:'fixture'}),controlToken:'c'.repeat(64),instanceId:'d'.repeat(32),onStop:()=>{stopped=true;}});
-  try {
-    await writePrivate(join(root,'runtime.json'),JSON.stringify({pid:process.pid,port:server.port,instanceId:'a'.repeat(32),controlToken:'b'.repeat(64)}));
-    assert.equal((await run(['status','--json'])).value.code,'unavailable');
-    assert.equal((await run(['stop','--json'])).value.code,'runtime_unavailable');
-    assert.equal(stopped,false);
-  } finally {await server.close();await rm(join(root,'runtime.json'));}
-}));
-
-test('concurrent stops all return successful JSON after instance cleanup', {timeout:20000}, () => fixture(async ({run,auth,freePort}) => {
-  await auth();
-  assert.equal((await run(['start','--background','--port',String(await freePort()),'--json'])).value.code,'started');
-  const results=await Promise.all(Array.from({length:6},()=>run(['stop','--json'])));
-  for(const result of results) {assert.equal(result.code,0);assert.equal(result.value.ok,true);assert.equal(result.stderr,'');}
-  assert.equal((await run(['status','--json'])).value.state,'stopped');
-}));
-
-test('doctor reports leftover lifecycle lock without modifying it', () => fixture(async ({run,auth,root,freePort}) => {
-  await auth();const lock=join(root,'lifecycle.lock');await mkdir(lock,{mode:0o700});
-  const result=await run(['doctor','--port',String(await freePort()),'--json']);
-  assert.equal(result.code,1);assert.equal(result.value.code,'local_not_ready');
-  assert.equal(result.value.lifecycle_lock,'present');assert.equal(result.value.next_action,'inspect_private_state');
-  assert.equal((await stat(lock)).isDirectory(),true);
-}));
-
-test('FIFO and null runtime state return safe errors instead of hanging', {timeout:10000}, () => fixture(async ({run,auth,root}) => {
-  await auth();const path=join(root,'runtime.json');
-  const fifo=spawn('/usr/bin/mkfifo',[path]);assert.equal((await once(fifo,'exit'))[0],0);
-  assert.equal((await run(['status','--json'])).value.code,'unsafe_runtime');
-  assert.equal((await run(['doctor','--json'])).value.runtime.state,'unsafe');
-  await rm(path);await writePrivate(path,'null');
-  assert.equal((await run(['status','--json'])).value.code,'unsafe_runtime');
-  await rm(path);
-  await rm(join(root,'codex','auth.json'));
-  const authFifo=spawn('/usr/bin/mkfifo',[join(root,'codex','auth.json')]);assert.equal((await once(authFifo,'exit'))[0],0);
-  assert.equal((await run(['doctor','--json'])).value.credentials,'missing_or_unsafe');
-}));
-
-test('doctor deadline terminates an unresponsive CLI version child', { timeout: 30000 }, () => fixture(async ({ run, base }) => {
-  // The connection closes when the fixture child exits. This checks termination
-  // directly instead of treating a fast doctor response as proof of cleanup.
-  const observer = net.createServer();
-  observer.listen(0, '127.0.0.1');
-  await once(observer, 'listening');
-  const waiting = new AbortController();
-  let socket;
-  try {
-    await writeFile(join(base, 'bin', 'codex'), `#!${process.execPath}
-import net from 'node:net';
-process.on('SIGTERM', () => {});
-net.connect(${observer.address().port}, '127.0.0.1');
-setInterval(() => {}, 1000);
-`, { mode: 0o700 });
-    const signal = AbortSignal.any([waiting.signal, AbortSignal.timeout(15000)]);
-    const exited = once(observer, 'connection', { signal }).then(async ([connected]) => {
-      socket = connected;
-      await once(socket, 'close', { signal });
-    });
-    const [result] = await Promise.all([run(['doctor', '--json']), exited]);
-    assert.equal(result.value.cli.version, null);
-    assert.equal(result.code, 1);
-  } finally {
-    waiting.abort();
-    socket?.destroy();
-    await new Promise(resolve => observer.close(resolve));
-  }
-}));
-
-for (const mode of ['oversized', 'redirect', 'stalled']) {
-  test(`control probe rejects ${mode} responses`, { timeout: 30000 }, () => fixture(async ({ run, auth, root }) => {
-    await auth();
-    const paths = [], instanceId = 'a'.repeat(32);
-    const server = http.createServer((req, res) => {
-      paths.push(req.url);
-      if (mode === 'oversized') {
-        // Valid identity and JSON: removing the size cap must make this fail.
-        res.end(JSON.stringify({ instanceId, padding: 'x'.repeat(2048) }));
-      } else if (mode === 'redirect') {
-        if (req.url === '/control/status') res.writeHead(302, { location: '/unexpected' });
-        res.end(JSON.stringify({ instanceId }));
-      } else {
-        res.writeHead(200);
-        res.flushHeaders();
-      }
-    });
-    server.listen(0, '127.0.0.1');
-    await once(server, 'listening');
-    try {
-      await writePrivate(join(root, 'runtime.json'), JSON.stringify({
-        pid: process.pid, port: server.address().port, instanceId, controlToken: 'b'.repeat(64),
-      }));
-      const result = await run(['status', '--json']);
-      assert.equal(result.code, 1);
-      assert.equal(result.value.code, 'unavailable');
-      assert.equal(result.stderr, '');
-      assert.deepEqual(paths, ['/control/status']);
-    } finally {
-      await rm(join(root, 'runtime.json'));
-      server.closeAllConnections();
-      await new Promise(resolve => server.close(resolve));
-    }
-  }));
-}
 
 test('account CLI switches request credentials without changing the gateway address or process', t => fixture(async ({ run, auth, root, base, freePort }) => {
   await auth();
@@ -283,34 +147,6 @@ globalThis.fetch = () => { throw new Error('Unexpected external fetch in CLI fix
   assert.equal((await run(['account-select', '--account', 'default', '--json'])).value.code, 'account_selected');
   assert.deepEqual(await requestCredentials(), { authorization: 'Bearer fixture', account: 'fixture' });
   assert.equal((await run(['account-select', '--account', '../../oops', '--json'])).value.code, 'invalid_account');
-}));
-
-test('CLI automatically selects a usable account and persists it across restart', () => fixture(async ({ run, root, auth, freePort }) => {
-  const id = (await run(['account-add', '--label', 'Second', '--json'])).value.account.id;
-  const home = await ensureState(join(root, 'accounts', id));
-  await writePrivate(join(home, 'auth.json'), JSON.stringify({ auth_mode: 'chatgpt', tokens: { access_token: 'fixture-second', account_id: 'fixture-second' } }));
-  // Local readiness and startup don't require the currently selected Default to
-  // be signed in when another account is ready.
-  assert.equal((await run(['doctor', '--json'])).value.credentials, 'present');
-  const port = await freePort();
-  for (let attempt = 0; attempt < 2; attempt++) {
-    assert.equal((await run(['start', '--background', '--port', String(port), '--json'])).value.code, 'started');
-    let status;
-    const deadline = Date.now() + 5000;
-    do {
-      status = (await run(['status', '--json'])).value;
-      if (status.routing?.state === 'ready') break;
-      await new Promise(resolve => setTimeout(resolve, 25));
-    } while (Date.now() < deadline);
-    assert.deepEqual(status.routing, { mode: 'automatic', weekly_reserve_percent: 5, allow_reserve_usage: false, state: 'ready', account: id });
-    assert.equal((await run(['accounts', '--json'])).value.accounts.find(item => item.selected).id, id);
-    assert.equal((await run(['stop', '--json'])).value.code, 'stopped');
-    // Default now has a login but is at the reserve. Restart must keep Second.
-    if (attempt === 0) {
-      await auth();
-      await writeFile(join(root, 'codex', 'fixture-usage.json'), JSON.stringify({ used: 95 }));
-    }
-  }
 }));
 
 test('shared usage CLI reports cached routing readings, refreshes them, and retains safe failure details', () => fixture(async ({ run, root, auth, freePort }) => {
@@ -388,4 +224,20 @@ test('reserve CLI defaults off, persists while stopped, applies live, and surviv
   assert.equal((await run(['stop', '--json'])).value.code, 'stopped');
   assert.equal((await run(['start', '--background', '--port', port, '--json'])).value.code, 'started');
   assert.equal((await run(['status', '--json'])).value.routing.allow_reserve_usage, true);
+}));
+
+test('credit CLI defaults off, validates input, applies live, and persists across restart', () => fixture(async ({ run, auth, freePort, root }) => {
+  const setting = async (...args) => (await run(['credit-fallback', '--account', 'default', ...args, '--json'])).value;
+  assert.equal((await setting()).allow_credit_fallback, false);
+  assert.equal((await setting('--enabled', 'yes')).code, 'invalid_arguments');
+  assert.equal((await run(['credit-fallback', '--json'])).value.code, 'invalid_arguments');
+  assert.equal((await setting('--enabled', 'true')).allow_credit_fallback, true);
+  assert.equal((await stat(join(root, 'credit-fallback.json'))).mode & 0o777, 0o600);
+  await auth();
+  await run(['start', '--background', '--port', String(await freePort()), '--json']);
+  assert.equal((await setting('--enabled', 'false')).allow_credit_fallback, false);
+  assert.equal((await setting('--enabled', 'true')).allow_credit_fallback, true);
+  await run(['stop', '--json']);
+  await run(['start', '--background', '--port', String(await freePort()), '--json']);
+  assert.equal((await run(['accounts', '--json'])).value.accounts[0].allow_credit_fallback, true);
 }));

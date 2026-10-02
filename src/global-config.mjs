@@ -26,8 +26,7 @@ http_headers = { "x-openai-actor-authorization" = "codex-gateway" }
 `;
 }
 
-// Recognize only the exact old template, so upgrading managed defaults remains
-// reversible without accepting arbitrary edits to the provider block.
+// Only exact managed templates may be updated or removed.
 const legacyProvider = (port, auth) => gatewayProvider(port, auth) +
   'request_max_retries = 0\nstream_max_retries = 0\nstream_idle_timeout_ms = 240000\n';
 

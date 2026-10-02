@@ -2,11 +2,11 @@
 
 **Automatically switch ChatGPT accounts for Codex CLI without changing your local endpoint.**
 
-Keep separate account profiles behind one loopback gateway, with usage visibility and controls in the CLI or native Mac menu-bar app. Sign in to your backing accounts once. The gateway checks usage automatically and switches to another account when the current account reaches **5% weekly remaining**. Requests already running finish on their original account. If every account is confirmed at the reserve, new requests pause until fresh usage becomes available. Enable **Allow reserve usage** in Settings to continue on the selected account when every account reaches the reserve; accounts above 5% remain preferred and upstream usage limits still apply. Usage-fetch failures alone do not stop requests: the selected account stays usable with a usage warning, so the 5% reserve is not a strict cap during telemetry outages.
+Keep separate account profiles behind one loopback gateway, with usage visibility in the CLI or native Mac menu-bar app. The gateway switches accounts when weekly remaining reaches **5%** or an included-usage window is exhausted. Active requests finish on their original account.
 
-**Current scope: Codex CLI and an opt-in Desktop connection.** A single existing-task turn completed through an alternate backing profile; broader desktop compatibility is unverified.
+Optional reserve and per-account credit permissions allow continuing after other included usage is unavailable. Both default off. Delayed or missing usage reports and active requests mean they are not strict spending caps. See [routing and credits](docs/cli.md#automatic-weekly-routing).
 
-**Use gateway in Codex** in the Mac app, or `global-enable` in the CLI, connects new and existing OpenAI tasks together. Switching it off restores both settings. The gateway requests immediate HTTP fallback from WebSocket clients. See [connection setup](docs/cli.md#codex-connection) and [verification](docs/verification.md).
+Use an isolated Codex CLI client or connect your existing Codex configuration through **Use gateway in Codex**. See [connection setup](docs/cli.md#codex-connection); compatibility depends on the client version.
 
 ## Get started
 
@@ -79,9 +79,7 @@ node src/cli.mjs usage-status --refresh --json
 node src/cli.mjs account-add --label Work --json
 ```
 
-Use the returned account ID with `login --account ID`. Login is interactive; the user completes it. All signed-in profiles join the pool automatically. The gateway keeps its current account while weekly usage is above 5%, then tries the next usable account in list order, wrapping around. It does not switch back merely because an earlier account resets.
-
-Usage checks run on startup and every minute, without inference. The threshold applies to reported usage; polling and requests already in progress can take an account below 5%. Short-window limits are not switching triggers. `account-select --account ID` remains available when idle, subject to the same reserve on subsequent requests. See [account commands](docs/cli.md#account-selection-and-usage).
+Use the returned account ID with `login --account ID` and complete the official login. Signed-in profiles join the pool automatically. `account-select --account ID` changes the selection when idle, subject to the routing policy. See [account commands](docs/cli.md#account-selection-and-usage) for usage fields and refresh behavior.
 
 ## Operation
 
@@ -98,15 +96,13 @@ node src/cli.mjs stop --json
 
 Enable **Settings → Keep gateway running** in the Mac app to launch at login and keep the gateway running while the app is open. CLI background mode alone has no restart supervisor. Shutdown cancels active requests. Authentication and renewal are owned by the official CLI; occasional sign-in is still required.
 
-## Boundary
+## Gateway boundaries
 
-- Routes: `/v1/responses`, `/v1/responses/compact`, `/v1/alpha/search`, `/v1/images/generations`, `/v1/images/edits`, including query parameters.
-- Request and response bodies stream unchanged, including compressed and multipart bodies. Schema, model, and streaming-mode validation belongs to upstream. Allowlisted routing headers and returned turn state are preserved; turn-state lifetime belongs to the client.
-- Bind: `127.0.0.1` only. Host is checked; browser Origin requests are rejected. Inference routes trust local processes; control routes require a private token. Do not expose the port.
-- Caller credentials and the actor eligibility marker are stripped. Only the isolated backing login authenticates upstream; the marker grants no entitlements.
-- Transport defaults: 256 MiB per request on the wire, 1 MiB headers in either direction, and a 15-minute idle timeout. There is no decoded-body, JSON-depth, or total-response-duration limit. [Profile overrides](docs/cli.md#transport-limits) need no source changes.
-- Upstream status, error bodies, and retry guidance reach the client unchanged; the gateway never logs bodies, follows redirects, or retries inference. Client retry policy remains client-owned.
-- No gateway-managed credential refresh, model discovery, Chat Completions, or WebSockets.
+- HTTP routes: `/v1/responses`, `/v1/responses/compact`, `/v1/alpha/search`, `/v1/images/generations`, and `/v1/images/edits`. WebSocket clients receive an HTTP fallback response.
+- Bodies stream unchanged, including compression and multipart data. Model selection, schema validation, and turn-state lifetime belong to the client and upstream.
+- The gateway binds only to `127.0.0.1`, checks Host, and rejects browser Origin requests. Local inference routes trust local processes; control routes require a private token. Keep the port private.
+- Caller credentials are replaced with the isolated backing login. The gateway never logs bodies, follows upstream redirects, or retries inference.
+- [Transport limits](docs/cli.md#transport-limits) default to 256 MiB per request, 1 MiB headers, and a 15-minute idle timeout. Profile overrides need no source changes.
 
 ## Development and verification
 
@@ -118,6 +114,6 @@ swift test --package-path macos  # Native usage and automatic-run fixtures
 
 The CLI and account logic live in `src/`, SwiftUI in `macos/`, and fixtures in `test/`. Rebuild the app after backend changes because it bundles a copy of `src/`. Quit and reopen it to load a rebuilt executable.
 
-Local fixtures cover the gateway and Mac app. The bounded desktop check and its limits are recorded in [verification](docs/verification.md). Changes in the official CLI or Desktop engine may affect compatibility.
+See [verification](docs/verification.md) for local and explicitly authorized live checks, and [AGENTS.md](AGENTS.md) for development rules.
 
-Development rules: [AGENTS.md](AGENTS.md). Checks are local; no CI. npm publication is disabled via `private: true`. Licensed under [MIT](LICENSE). No third-party implementation vendored. Not an official OpenAI product.
+Licensed under [MIT](LICENSE). Not an official OpenAI product.

@@ -14,7 +14,6 @@
 - Preserve loopback binding, credential isolation, exact protocol forwarding, client-owned turn-state lifetime, cancellation, and request limits.
 - Never log or commit credentials, control tokens, model request/response bodies, private reasoning, or session histories.
 - Follow documented recovery; never signal an unverified PID or delete backing credentials to repair runtime state.
-- Keep this project independent of llm-local-gateway and temporary harnesses.
 
 ## Changes
 

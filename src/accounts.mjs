@@ -34,7 +34,8 @@ export async function listAccounts(root) {
     const account = await getAccount(root, id);
     let ready = true;
     try { await readAuth(account.path, { create: false }); } catch { ready = false; }
-    accounts.push({ id, label: account.label, selected: id === selected.id, authenticated: ready });
+    accounts.push({ id, label: account.label, selected: id === selected.id, authenticated: ready,
+      allow_credit_fallback: await readCreditFallback(root, id) });
   }
   return accounts;
 }
@@ -72,4 +73,24 @@ export async function selectAccount(root, id) {
   await writePrivate(temporary, JSON.stringify({ id }));
   try { await rename(temporary, target); } finally { await unlink(temporary).catch(() => {}); }
   return account;
+}
+
+export async function readCreditFallback(root, id) {
+  const account = await getAccount(root, id);
+  try {
+    const value = await readPrivate(join(account.path, 'credit-fallback.json'));
+    if (typeof value?.allow_credit_fallback !== 'boolean') throw accountError('invalid_account', 'Credit fallback setting is invalid.');
+    return value.allow_credit_fallback;
+  } catch (error) { if (error.code === 'ENOENT') return false; throw error; }
+}
+
+export async function writeCreditFallback(root, id, enabled) {
+  if (typeof enabled !== 'boolean') throw accountError('invalid_arguments', 'Credit fallback must be boolean.');
+  const account = await getAccount(root, id);
+  await readCreditFallback(root, id); // Refuse unsafe existing state.
+  await ensureState(account.path);
+  const target = join(account.path, 'credit-fallback.json');
+  const temporary = join(account.path, `credits-${randomBytes(12).toString('hex')}.json`);
+  await writePrivate(temporary, JSON.stringify({ allow_credit_fallback: enabled }));
+  try { await rename(temporary, target); } finally { await unlink(temporary).catch(() => {}); }
 }
