@@ -401,7 +401,6 @@ struct GatewayView: View {
         }
     }
     private func feedback(_ message: String) -> some View {
-        // Append feedback after the controls: no empty slot and no controls pushed down.
         HStack(alignment: .top, spacing: 8) {
             Image(systemName: model.isError ? "exclamationmark.circle.fill" : "checkmark.circle")
                 .foregroundStyle(model.isError ? Color.orange : .secondary)

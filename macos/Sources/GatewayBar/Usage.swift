@@ -78,9 +78,7 @@ struct Usage: Decodable {
     let checked_at: String
     let buckets: [UsageBucket]
     var included_usage_exhausted: Bool? = nil
-    // Match the reported duration, not primary/secondary order or plan price.
-    // With multiple buckets, only the explicitly identified core bucket may
-    // supply the summary. Other buckets stay visible in usage details.
+    // Only a seven-day window in the core bucket supplies the weekly summary.
     var coreBucket: UsageBucket? {
         buckets.first(where: { $0.id == "codex" }) ?? (buckets.count == 1 ? buckets.first : nil)
     }

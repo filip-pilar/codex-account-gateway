@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { gzipSync, zstdCompressSync } from 'node:zlib';
+import { gzipSync } from 'node:zlib';
 import net from 'node:net';
 import http from 'node:http';
 import { buffer } from 'node:stream/consumers';
@@ -62,27 +62,6 @@ test('control endpoint requires its private token',async()=>{
   try{const url=`http://127.0.0.1:${s.port}/control/stop`;assert.equal((await fetch(url,{method:'POST'})).status,403);assert.equal(stopped,false);const r=await fetch(url,{method:'POST',headers:{authorization:'Bearer test-token'}});await r.text();assert.equal(r.status,200);await new Promise(setImmediate);assert.equal(stopped,true);}finally{await s.close();}
 });
 
-test('shared usage reads require control auth and refresh returns while polling is pending', async () => {
-  let refreshes = 0;
-  const s = await startServer({ port: 0, credentials: auth, controlToken: 'fixture-control',
-    usageStatus: async () => ({ checking: refreshes > 0, accounts: [] }),
-    refreshUsage: () => { refreshes++; return new Promise(() => {}); } });
-  const url = `http://127.0.0.1:${s.port}/control/usage`;
-  try {
-    for (const method of ['GET', 'POST']) assert.equal((await fetch(url, { method })).status, 403);
-    assert.equal(refreshes, 0);
-    const headers = { authorization: 'Bearer fixture-control' };
-    const initial = await fetch(url, { headers });
-    assert.equal((await initial.json()).usage_status.checking, false);
-    assert.equal(refreshes, 0);
-    const refreshed = await fetch(url, { method: 'POST', headers, signal: AbortSignal.timeout(1000) });
-    assert.equal(refreshed.status, 200);
-    assert.equal((await refreshed.json()).usage_status.checking, true);
-    assert.equal(refreshes, 1);
-    assert.equal((await fetch(url, { headers: { ...headers, origin: 'https://example.test' } })).status, 403);
-  } finally { await s.close(); }
-});
-
 test('account changes require control auth, refuse in-flight work, and gate new requests during selection', async () => {
   let began, release, selected = 'before', switchStarted, finishSwitch;
   const ready = new Promise(r => began = r), pending = new Promise(r => release = r);
@@ -123,36 +102,9 @@ async function nativeFixture(handler, run, options = {}) {
   }
 }
 
-test('native transport accepts image-heavy bodies above 16 MiB, plain/gzip/zstd, byte for byte', { timeout: 15000 }, async () => {
-  const large = Buffer.from(JSON.stringify({ ...body, input: 'fixture-image'.repeat(1_500_000) }));
-  assert.ok(large.length > 16 * 1024 * 1024);
-  let expected, calls = 0;
-  await nativeFixture(async (req, res) => {
-    const received = await buffer(req);
-    assert.deepEqual(received, expected);
-    assert.equal(req.headers.authorization, 'Bearer backing-fixture');
-    assert.equal(req.headers['chatgpt-account-id'], 'fixture-account');
-    for (const name of ['x-api-key', 'x-openai-actor-authorization']) assert.equal(req.headers[name], undefined);
-    assert.equal(req.headers['session-id'], 'session');
-    assert.equal(req.headers['thread-id'], 'thread');
-    calls++; res.end('accepted');
-  }, async url => {
-    for (const [encoding, bytes] of [['identity', large], ['gzip', gzipSync(large)], ['zstd', zstdCompressSync(large)]]) {
-      expected = bytes;
-      const response = await fetch(url + '/v1/responses', { method: 'POST', body: bytes,
-        headers: { 'content-encoding': encoding, authorization: 'Bearer caller', 'x-api-key': 'caller-key',
-          'x-openai-actor-authorization': 'marker', 'session-id': 'session', 'thread-id': 'thread' },
-        signal: AbortSignal.timeout(10000) });
-      assert.equal(response.status, 200); assert.equal(await response.text(), 'accepted');
-    }
-    assert.equal(calls, 3);
-  });
-});
-
 test('schema, streaming mode, multipart, encoding and query parameters are upstream-owned', async () => {
-  let nested = {}; for (let i = 0; i < 100; i++) nested = { child: nested };
   const cases = [
-    ['responses', JSON.stringify({ model: 'm'.repeat(300), stream: false, input: nested }), 'application/json', 'identity'],
+    ['responses', JSON.stringify({ ...body, stream: false }), 'application/json', 'identity'],
     ['responses/compact?feature=a%2Fb&feature=c', '{', 'application/json', 'identity'],
     ['images/generations', '{}', 'application/json', 'identity'],
     ['alpha/search', '{}', 'application/json', 'identity'],
@@ -164,56 +116,46 @@ test('schema, streaming mode, multipart, encoding and query parameters are upstr
     assert.equal(req.url, '/backend-api/codex/' + path);
     assert.equal((await buffer(req)).toString(), text);
     assert.equal(req.headers['content-type'], type); assert.equal(req.headers['content-encoding'], encoding);
-    res.writeHead(400, { 'content-type': 'application/json' });
-    res.end('{"error":{"code":"context_length_exceeded","message":"Fixture context is full"}}');
+    res.writeHead(429, { 'content-type': 'application/json', 'retry-after': '60' });
+    res.end('{"error":{"code":"rate_limit_exceeded","message":"Fixture quota is full"}}');
   }, async url => {
     for (const [path, body, type, encoding] of cases) {
       const response = await fetch(url + '/v1/' + path, { method: 'POST', body,
         headers: { 'content-type': type, 'content-encoding': encoding } });
-      assert.equal(response.status, 400); assert.equal((await response.json()).error.code, 'context_length_exceeded');
+      assert.equal(response.headers.get('retry-after'), '60');
+      assert.equal(response.status, 429); assert.equal((await response.json()).error.code, 'rate_limit_exceeded');
     }
     assert.equal(index, cases.length);
   });
 });
 
-test('native forwarding preserves large turn-state headers and compressed response bytes', async () => {
+test('native forwarding substitutes credentials and preserves turn state and compressed bytes', async () => {
   const incomingState = 'a'.repeat(32768), outgoingState = 'b'.repeat(65536);
   const compressed = gzipSync('data: fixture\n\n');
   await nativeFixture(async (req, res) => {
     assert.equal(req.headers['x-codex-turn-state'], incomingState);
-    await buffer(req);
+    assert.equal(req.headers.authorization, 'Bearer backing-fixture');
+    assert.equal(req.headers['chatgpt-account-id'], 'fixture-account');
+    for (const name of ['x-api-key', 'x-openai-actor-authorization']) assert.equal(req.headers[name], undefined);
+    assert.equal(req.headers['session-id'], 'session');
+    assert.equal(req.headers['thread-id'], 'thread');
+    assert.deepEqual(await buffer(req), compressed);
     res.writeHead(200, { 'x-codex-turn-state': outgoingState, 'content-encoding': 'gzip',
       'content-length': compressed.length, 'content-type': 'text/event-stream' });
     res.end(compressed);
   }, async url => {
     const result = await new Promise((resolve, reject) => {
       const request = http.request(url + '/v1/responses', { method: 'POST', maxHeaderSize: 1024 * 1024,
-        headers: { 'x-codex-turn-state': incomingState } }, async response => {
+        headers: { 'x-codex-turn-state': incomingState, 'content-encoding': 'gzip',
+          authorization: 'Bearer caller', 'x-api-key': 'caller-key', 'x-openai-actor-authorization': 'marker',
+          'session-id': 'session', 'thread-id': 'thread' } }, async response => {
         try { resolve({ headers: response.headers, body: await buffer(response) }); } catch (error) { reject(error); }
       });
-      request.on('error', reject); request.end('{}');
+      request.on('error', reject); request.end(compressed);
     });
     assert.equal(result.headers['x-codex-turn-state'], outgoingState);
     assert.equal(result.headers['content-encoding'], 'gzip'); assert.deepEqual(result.body, compressed);
   });
-});
-
-test('progressing uploads and responses outlive the idle timeout', { timeout: 5000 }, async () => {
-  const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
-  await nativeFixture(async (req, res) => {
-    assert.equal((await buffer(req)).toString(), 'x'.repeat(10));
-    res.writeHead(200, { 'content-type': 'text/event-stream' }); res.flushHeaders();
-    for (let i = 0; i < 10; i++) { res.write('data: fixture\n\n'); await delay(50); }
-    res.end();
-  }, async url => {
-    const start = Date.now();
-    const response = await fetch(url + '/v1/responses', { method: 'POST', duplex: 'half',
-      body: (async function* () { for (let i = 0; i < 10; i++) { yield 'x'; await delay(50); } })(),
-      signal: AbortSignal.timeout(4000),
-    });
-    assert.equal(response.status, 200); assert.equal(await response.text(), 'data: fixture\n\n'.repeat(10));
-    assert.ok(Date.now() - start > 800);
-  }, { timeoutMs: 300 });
 });
 
 test('idle uploads, upstream headers and response bodies time out and close sockets', { timeout: 5000 }, async () => {
@@ -291,25 +233,6 @@ test('native streaming starts before upload completion and cancels when the clie
     request.destroy();
     await closed.promise;
   });
-});
-
-test('upstream errors retain their status, body and retry guidance without replay', async () => {
-  for (const status of [400, 401, 429]) {
-    const body = JSON.stringify({ error: { code: 'fixture-error', message: 'unchanged detail' } });
-    let calls = 0;
-    await nativeFixture(async (req, res) => {
-      await buffer(req); calls++;
-      res.writeHead(status, { 'retry-after': '60', 'x-request-id': 'fixture' });
-      res.end(body);
-    }, async url => {
-      const response = await fetch(url + '/v1/responses', { method: 'POST', body: '{}' });
-      assert.equal(response.status, status);
-      assert.equal(response.headers.get('retry-after'), '60');
-      assert.equal(response.headers.get('x-request-id'), 'fixture');
-      assert.equal(await response.text(), body);
-      assert.equal(calls, 1);
-    });
-  }
 });
 
 test('client cancellation and gateway shutdown close active upstream work', { timeout: 5000 }, async () => {

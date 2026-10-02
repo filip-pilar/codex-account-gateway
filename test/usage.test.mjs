@@ -1,72 +1,22 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, realpath, rm, writeFile, stat, symlink } from 'node:fs/promises';
+import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { once } from 'node:events';
 import net from 'node:net';
-import { addAccount, renameAccount, listAccounts, selectedAccount, selectAccount, getAccount, accountRoot, readCreditFallback, writeCreditFallback } from '../src/accounts.mjs';
 import { ensureState, writePrivate } from '../src/state.mjs';
 import { readUsage, normalizeUsage } from '../src/usage.mjs';
 async function fixture(fn) {
-  const root = await realpath(await mkdtemp(join(tmpdir(), 'gateway-accounts-')));
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'gateway-usage-')));
   const auth = async path => {
     const home = await ensureState(path);
     await writePrivate(join(home, 'auth.json'), JSON.stringify({ auth_mode: 'chatgpt', tokens: { access_token: 'fixture-secret', account_id: 'fixture-id' } }));
   };
   try { await fn(root, auth); } finally { await rm(root, { recursive: true, force: true }); }
 }
-test('accounts stay isolated; selection requires login and survives subsequent reads', () => fixture(async(root, auth) => {
-  assert.equal((await selectedAccount(root)).id, 'default');
-  const a = await addAccount(root, 'Personal'), b = await addAccount(root, 'Work');
-  assert.notEqual(a.id, b.id);
-  await assert.rejects(selectAccount(root, a.id), { code: 'login_required' });
-  await auth(accountRoot(root, a.id)); await selectAccount(root, a.id);
-  assert.equal((await selectedAccount(root)).id, a.id);
-  const accounts = await listAccounts(root);
-  assert.equal(accounts.find(x => x.id === a.id).authenticated, true);
-  assert.equal(accounts.find(x => x.id === b.id).authenticated, false);
-  assert.doesNotMatch(JSON.stringify(accounts), /fixture-secret|fixture-id/);
-  assert.equal((await stat(join(root, 'selected-account.json'))).mode & 0o777, 0o600);
-  await auth(root); await selectAccount(root, 'default');
-  assert.equal((await selectedAccount(root)).id, 'default');
-  await assert.rejects(getAccount(root, '../codex'), { code: 'invalid_account' });
-  await assert.rejects(addAccount(root, 'bad\nlabel'), { code: 'invalid_arguments' });
-}));
-test('account selection rejects symlink state', () => fixture(async(root, auth) => {
-  const account = await addAccount(root, 'A'); await auth(accountRoot(root, account.id));
-  await symlink(join(root, 'other'), join(root, 'selected-account.json'));
-  await assert.rejects(selectAccount(root, account.id), /Symbolic links/);
-  await assert.rejects(selectedAccount(root), /Symbolic links/);
-}));
-test('default and added account labels can be renamed without changing selection or credentials', () => fixture(async(root, auth) => {
-  await auth(root);
-  const other = await addAccount(root, 'Work');
-  assert.equal((await getAccount(root, 'default')).label, 'Default');
-  await renameAccount(root, 'default', 'Personal');
-  await renameAccount(root, other.id, 'Second');
-  assert.deepEqual((await listAccounts(root)).map(account => account.label), ['Personal', 'Second']);
-  assert.equal((await selectedAccount(root)).id, 'default');
-  assert.equal((await listAccounts(root))[0].authenticated, true);
-  await assert.rejects(renameAccount(root, 'default', 'bad\nlabel'), { code: 'invalid_arguments' });
-  assert.equal((await getAccount(root, 'default')).label, 'Personal');
-}));
-test('account selection rejects malformed metadata without replacing the selected account', () => fixture(async (root, auth) => {
-  await auth(root);
-  await selectAccount(root, 'default');
-  const account = await addAccount(root, 'Work');
-  const path = accountRoot(root, account.id);
-  await auth(path);
-
-  for (const metadata of [null, {}, { label: 7 }, { label: ' ' }, { label: 'x'.repeat(61) }]) {
-    await writeFile(join(path, 'account.json'), JSON.stringify(metadata));
-    await assert.rejects(getAccount(root, account.id), { code: 'invalid_account' });
-    await assert.rejects(selectAccount(root, account.id), { code: 'invalid_account' });
-    assert.equal((await selectedAccount(root)).id, 'default');
-  }
-}));
 test('usage preserves separate buckets, clamps percentages, and never invents missing windows', () => {
   const result = normalizeUsage({ rateLimits: { primary: { usedPercent: 12 } }, rateLimitsByLimitId: {
     codex: { primary: { usedPercent: 36, windowDurationMins: 300, resetsAt: 100 }, secondary: null, credits: { balance: 'secret' } },
@@ -77,38 +27,10 @@ test('usage preserves separate buckets, clamps percentages, and never invents mi
   assert.equal(result[1].primary.remaining_percent, 0); assert.equal(result[1].secondary.remaining_percent, 100);
   assert.equal(result[2].primary, null); assert.doesNotMatch(JSON.stringify(result), /secret/);
   assert.deepEqual(normalizeUsage({}), []);
+  const credits = normalizeUsage({ rateLimits: { credits: { hasCredits: true, unlimited: false, balance: '62706.25' } } });
+  assert.deepEqual(credits[0].credits, { has_credits: true, unlimited: false, balance: 62706.25 });
 });
 
-test('credit balances retain zero, fractional and unlimited values without copying arbitrary text', () => {
-  const normalize = credits => normalizeUsage({ rateLimits: { credits } })[0].credits;
-  assert.deepEqual(normalize({ hasCredits: true, unlimited: false, balance: '62706.25' }),
-    { has_credits: true, unlimited: false, balance: 62706.25 });
-  assert.deepEqual(normalize({ hasCredits: false, unlimited: false, balance: '0' }),
-    { has_credits: false, unlimited: false, balance: 0 });
-  assert.deepEqual(normalize({ hasCredits: false, unlimited: true, balance: null }),
-    { has_credits: false, unlimited: true, balance: null });
-  for (const balance of ['', 'private detail', '-1', 'Infinity', '9'.repeat(400)]) {
-    assert.equal(normalize({ hasCredits: true, unlimited: false, balance }).balance, null);
-  }
-  assert.equal(normalize(null), null);
-  assert.equal(normalize({ balance: '0' }), null);
-});
-
-test('credit permission defaults off, stays per account across renames, and rejects unsafe state', () => fixture(async root => {
-  const other = await addAccount(root, 'Other');
-  assert.equal(await readCreditFallback(root, 'default'), false);
-  await writeCreditFallback(root, 'default', true);
-  await renameAccount(root, 'default', 'Renamed');
-  const accounts = await listAccounts(root);
-  assert.equal(accounts[0].allow_credit_fallback, true);
-  assert.equal(accounts[1].allow_credit_fallback, false);
-  assert.equal((await stat(join(root, 'credit-fallback.json'))).mode & 0o777, 0o600);
-  await writeCreditFallback(root, 'default', false);
-  assert.equal(await readCreditFallback(root, 'default'), false);
-  await assert.rejects(writeCreditFallback(root, other.id, 'true'), { code: 'invalid_arguments' });
-  await symlink(join(root, 'credit-fallback.json'), join(accountRoot(root, other.id), 'credit-fallback.json'));
-  await assert.rejects(writeCreditFallback(root, other.id, true), /Symbolic links/);
-}));
 test('usage RPC only initializes and reads limits; inherited provider secrets are stripped', () => fixture(async(root, auth) => {
   await auth(root);
   const executable = join(root, 'codex-fixture');

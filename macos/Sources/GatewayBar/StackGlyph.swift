@@ -1,6 +1,5 @@
 import AppKit
 
-// A compact stack of layers, drawn directly at menu-bar size.
 enum StackGlyph {
     static var menuImage: NSImage {
         let image = NSImage(size: NSSize(width: 20, height: 18), flipped: true) { _ in

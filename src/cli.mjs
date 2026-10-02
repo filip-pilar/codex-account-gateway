@@ -57,7 +57,7 @@ async function saved() {
   return r;
 }
 function probe(r, action = 'status') {
-  // A fresh built-in HTTP connection avoids the observed Undici shutdown crash.
+  // Avoid pooled connections when a control request can stop its server.
   return new Promise(resolve => {
     let settled = false;
     const finish = value => { if (settled) return; settled = true; clearTimeout(timer); resolve(value); req.destroy(); };

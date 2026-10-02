@@ -1,7 +1,6 @@
 import AppKit
 import SwiftUI
 
-// Original vector artwork shared by the app icon and header.
 struct AccountGlyph: Shape {
     static var outline: CGPath {
         let p = CGMutablePath()

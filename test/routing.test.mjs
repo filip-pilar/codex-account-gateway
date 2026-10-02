@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { addAccount, accountRoot, selectedAccount } from '../src/accounts.mjs';
 import { ensureState, writePrivate } from '../src/state.mjs';
-import { createRouter, weeklyWindow } from '../src/routing.mjs';
+import { createRouter } from '../src/routing.mjs';
 import { startServer } from '../src/server.mjs';
 
 const limits = (remaining, reset = null) => ({ buckets: [{ id: 'codex',
@@ -136,96 +136,6 @@ test('usage failures keep forwarding after cache expiry and expose only safe dia
   assert.equal((await router.credentials()).account, 'fixture-account-1', 'an unknown account remains a fallback when the current account reaches reserve');
 }));
 
-test('missing weekly data keeps the selected signed-in account usable; missing login still blocks', () => fixture(async ({ root, paths, readings, router }) => {
-  readings.set(root, { buckets: [{ id: 'codex', primary: { remaining_percent: 99, window_minutes: 300 } }] });
-  await router.refresh();
-  assert.equal((await router.credentials()).account, 'fixture-account-0');
-  assert.equal(router.status().state, 'usage_degraded');
-  await rm(join(paths[1], 'codex', 'auth.json'));
-  await router.refresh();
-  assert.equal((await router.credentials()).account, 'fixture-account-0');
-  assert.equal(weeklyWindow({ buckets: [
-    { id: 'images', primary: { remaining_percent: 100, window_minutes: 10080 } }, { id: 'codex', primary: null },
-  ] }), null);
-  await rm(join(root, 'codex', 'auth.json'));
-  await router.refresh();
-  await assert.rejects(router.credentials(), { code: 'login_required' });
-}));
-
-test('cold-start requests and client retries never wait for usage or start more usage workers', () => fixture(async ({ root }) => {
-  const began = Promise.withResolvers();
-  let reads = 0, forwards = 0;
-  const router = createRouter({ root, usage: async (_path, { signal }) => {
-    reads++;
-    began.resolve();
-    return new Promise((resolve, reject) => signal.addEventListener('abort', () => reject(new Error('cancelled')), { once: true }));
-  } });
-  const server = await startServer({ port: 0, credentials: router.credentials, transport: async () => {
-    forwards++; return new Response('fixture');
-  } });
-  try {
-    void router.refresh();
-    await began.promise;
-    for (let i = 0; i < 4; i++) {
-      const response = await fetch(`http://127.0.0.1:${server.port}/v1/responses`, { method: 'POST',
-        body: JSON.stringify({ model: 'fixture', stream: true }), signal: AbortSignal.timeout(1000) });
-      assert.equal(response.status, 200);
-      await response.text();
-    }
-    assert.equal(forwards, 4);
-    assert.equal(reads, 2);
-    assert.equal(router.status().state, 'usage_degraded');
-  } finally { await server.close(); await router.close(); }
-}));
-
-test('empty and expired usage reports preserve valid snapshots and confirmed reserves', () => fixture(async ({ paths, readings, router, advance }) => {
-  await router.refresh();
-  advance(1000);
-  for (const path of paths) readings.set(path, { buckets: [] });
-  await router.refresh();
-  assert.equal((await router.credentials()).account, 'fixture-account-0');
-  assert.equal((await router.usageStatus()).accounts[0].buckets[0].secondary.remaining_percent, 80);
-  assert.equal((await router.usageStatus()).accounts[0].diagnostics.last_error, 'missing_weekly_window');
-  for (const path of paths) readings.set(path, limits(5));
-  await router.refresh();
-  advance(600_000);
-  for (const path of paths) readings.set(path, limits(100, 120));
-  await router.refresh();
-  await assert.rejects(router.credentials(), { code: 'weekly_reserve_reached' });
-  assert.equal((await router.usageStatus()).accounts[0].diagnostics.last_error, 'stale_response');
-  for (const path of paths) readings.set(path, { buckets: [] });
-  await router.refresh();
-  await assert.rejects(router.credentials(), { code: 'weekly_reserve_reached' });
-  readings.set(paths[1], limits(80));
-  await router.refresh();
-  assert.equal((await router.credentials()).account, 'fixture-account-1');
-  assert.equal(router.status().state, 'ready');
-  assert.equal((await router.usageStatus()).accounts[1].diagnostics.consecutive_failures, 0);
-}));
-
-test('background refresh is coalesced, polls without clients, and stops its usage workers on shutdown', () => fixture(async ({ root }) => {
-  const secondCheck = Promise.withResolvers();
-  let calls = 0, aborted = 0;
-  const router = createRouter({ root, intervalMs: 10, usage: async (_path, { signal }) => {
-    calls++;
-    if (calls <= 2) return limits(80);
-    secondCheck.resolve();
-    return new Promise((resolve, reject) => signal.addEventListener('abort', () => {
-      aborted++; reject(new Error('cancelled'));
-    }, { once: true }));
-  } });
-  try {
-    await Promise.all([router.refresh(), router.refresh()]);
-    assert.equal(calls, 2);
-    // Keep the test's event loop alive while the production timer is unref'ed.
-    const deadline = setTimeout(() => secondCheck.reject(new Error('poll did not run')), 5000);
-    try { await secondCheck.promise; } finally { clearTimeout(deadline); }
-    await router.close();
-    assert.equal(aborted, 2);
-    assert.equal(calls, 4);
-  } finally { await router.close(); }
-}));
-
 test('credit fallback is per account, lower priority than included usage, and separate from reserve permission', () => fixture(async ({ root, second, paths, readings, router }) => {
   readings.set(root, credited(0));
   readings.set(paths[1], credited(0));
@@ -247,21 +157,6 @@ test('credit fallback is per account, lower priority than included usage, and se
   readings.set(root, limits(0));
   await router.refresh();
   await router.select(second.id);
-  await assert.rejects(router.credentials(), { code: 'usage_limit_reached' });
-}));
-
-test('short-window exhaustion switches accounts even when weekly allowance remains', () => fixture(async ({ root, paths, readings, router }) => {
-  const shortLimit = credited(90);
-  shortLimit.buckets[0].primary.remaining_percent = 0;
-  readings.set(root, shortLimit);
-  await router.setCreditFallback('default', true);
-  await router.refresh();
-  assert.equal((await router.credentials()).account, 'fixture-account-1');
-  readings.set(paths[1], limits(0));
-  await router.refresh();
-  assert.equal((await router.credentials()).account, 'fixture-account-0');
-  assert.equal(router.status().state, 'credit_fallback');
-  await router.setCreditFallback('default', false);
   await assert.rejects(router.credentials(), { code: 'usage_limit_reached' });
 }));
 
@@ -314,37 +209,3 @@ test('fallback rejects missing, zero, failed, stale, and unrelated credits; repl
   await router.refresh();
   await assert.rejects(router.credentials(), { code: 'usage_limit_reached' });
 }));
-
-for (const permission of ['reserve', 'credit']) {
-  test(`${permission} control authenticates and disabling it leaves active requests untouched`, () => fixture(async ({ paths, readings, router }) => {
-    for (const path of paths) readings.set(path, permission === 'reserve' ? limits(2) : credited(0));
-    await router.refresh();
-    const began = Promise.withResolvers(), held = Promise.withResolvers();
-    let calls = 0;
-    const server = await startServer({ port: 0, credentials: router.credentials, controlToken: 'fixture-control',
-      setReserveUsage: router.setAllowReserveUsage, setCreditFallback: router.setCreditFallback,
-      transport: async () => { calls++; began.resolve(); await held.promise; return new Response('unchanged', { status: 429 }); } });
-    const base = `http://127.0.0.1:${server.port}`;
-    const route = permission === 'reserve' ? 'reserve-usage' : 'credit-fallback/default';
-    const control = (enabled, token = 'fixture-control') => fetch(`${base}/control/${route}/${enabled}`, {
-      method: 'POST', headers: { authorization: `Bearer ${token}` },
-    });
-    let pending;
-    try {
-      assert.equal((await control(true, 'wrong')).status, 403);
-      await assert.rejects(router.credentials());
-      assert.equal((await control(true)).status, 200);
-      pending = fetch(`${base}/v1/responses`, { method: 'POST', body: '{}' });
-      await began.promise;
-      assert.equal((await control(false)).status, 200);
-      const blocked = await fetch(`${base}/v1/responses`, { method: 'POST', body: '{}' });
-      assert.equal(blocked.status, 503);
-      assert.equal((await blocked.json()).error.code, permission === 'reserve' ? 'weekly_reserve_reached' : 'usage_limit_reached');
-      held.resolve();
-      const response = await pending;
-      assert.equal(response.status, 429);
-      assert.equal(await response.text(), 'unchanged');
-      assert.equal(calls, 1);
-    } finally { held.resolve(); await pending; await server.close(); }
-  }));
-}

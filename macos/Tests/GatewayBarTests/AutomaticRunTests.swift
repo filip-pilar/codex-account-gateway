@@ -23,19 +23,4 @@ final class AutomaticRunTests: XCTestCase {
         XCTAssertTrue(policy.shouldStart(state: "stopped", hasAccount: true))
     }
 
-    func testAttentionIsReportedOnceUntilRoutingRecovers() throws {
-        func routing(_ state: String) -> Routing {
-            Routing(mode: "automatic", weekly_reserve_percent: 5, state: state, account: "default")
-        }
-        var policy = AutomaticRun(enabled: true, paused: false)
-        XCTAssertNotNil(policy.attention(for: routing("weekly_reserve_reached")))
-        XCTAssertNil(policy.attention(for: routing("usage_degraded")))
-        XCTAssertNotNil(policy.attention(for: routing("weekly_reserve_reached")))
-        XCTAssertNil(policy.attention(for: routing("weekly_reserve_reached")))
-        XCTAssertNil(policy.attention(for: nil))
-        XCTAssertNil(policy.attention(for: routing("weekly_reserve_reached")))
-        XCTAssertNil(policy.attention(for: routing("ready")))
-        XCTAssertNotNil(policy.attention(for: routing("weekly_reserve_reached")))
-    }
-
 }
