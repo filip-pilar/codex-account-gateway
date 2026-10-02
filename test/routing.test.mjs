@@ -178,6 +178,35 @@ test('partial reports cannot hide or clear a confirmed short-window exhaustion',
   assert.equal((await router.usageStatus()).accounts[0].included_usage_exhausted, false);
 }));
 
+test('fresh duration metadata clears provisional exhaustion in either window slot', async () => {
+  for (const slot of ['primary', 'secondary']) await fixture(async ({ root, paths, readings, router }) => {
+    readings.set(paths[1], limits(0));
+    const initial = limits(90);
+    initial.buckets[0][slot] = { remaining_percent: 0, window_minutes: null, resets_at: null };
+    readings.set(root, initial);
+    await router.refresh();
+    await assert.rejects(router.credentials(), { code: 'usage_limit_reached' });
+    assert.equal((await router.usageStatus()).accounts[0].included_usage_exhausted, true);
+
+    const stale = limits(90);
+    stale.buckets[0][slot].resets_at = 99;
+    readings.set(root, stale);
+    await router.refresh();
+    await assert.rejects(router.credentials(), { code: 'usage_limit_reached' }, 'an expired report cannot clear exhaustion');
+
+    const stillExhausted = limits(90);
+    stillExhausted.buckets[0][slot].remaining_percent = 0;
+    readings.set(root, stillExhausted);
+    await router.refresh();
+    await assert.rejects(router.credentials(), { code: 'usage_limit_reached' }, 'duration metadata alone does not replenish usage');
+
+    readings.set(root, limits(90));
+    await router.refresh();
+    assert.equal((await router.credentials()).account, 'fixture-account-0');
+    assert.equal((await router.usageStatus()).accounts[0].included_usage_exhausted, false);
+  });
+});
+
 test('fallback rejects missing, zero, failed, stale, and unrelated credits; replenishment resumes', () => fixture(async ({ root, paths, readings, router, advance }) => {
   readings.set(paths[1], limits(0));
   await router.setCreditFallback('default', true);

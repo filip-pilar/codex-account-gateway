@@ -115,6 +115,8 @@ export function createRouter({ root, usage = readUsage, now = Date.now, interval
                 if (!Number.isFinite(reported?.remaining_percent) ||
                     reported.resets_at != null && reported.resets_at * 1000 <= now()) continue;
                 const key = reported.window_minutes ?? slot;
+                // Fresh data replaces a provisional key recorded without a duration.
+                blocked.delete(slot);
                 if (reported.remaining_percent <= 0) blocked.add(key);
                 else blocked.delete(key);
               }
