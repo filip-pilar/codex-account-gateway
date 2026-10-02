@@ -8,7 +8,7 @@ import net from 'node:net';
 import http from 'node:http';
 import { stateRoot, ensureState, writePrivate, readPrivate, noSymlinkParents } from './state.mjs';
 import { startServer } from './server.mjs';
-import { selectedAccount, getAccount, listAccounts, addAccount, renameAccount, selectAccount } from './accounts.mjs';
+import { selectedAccount, getAccount, listAccounts, addAccount, renameAccount, selectAccount, readCreditFallback, writeCreditFallback } from './accounts.mjs';
 import { readUsage } from './usage.mjs';
 import { readReserveUsage, writeReserveUsage } from './reserve.mjs';
 import { createRouter } from './routing.mjs';
@@ -29,7 +29,7 @@ function options() {
   const allowed = {
     help: [], '--help': [], '-h': [], login: ['--account'],
     accounts: [], 'account-add': ['--label'], 'account-rename': ['--account', '--label'], 'account-select': ['--account'], usage: ['--account'], 'usage-status': ['--refresh'],
-    'reserve-usage': ['--enabled'], 'global-status': [], 'global-enable': ['--port'], 'global-disable': [],
+    'reserve-usage': ['--enabled'], 'credit-fallback': ['--account', '--enabled'], 'global-status': [], 'global-enable': ['--port'], 'global-disable': [],
     'openai-route-status': [], 'openai-route-enable': ['--port'], 'openai-route-disable': [],
     start: ['--port', '--background'], stop: [], status: [], doctor: ['--port'],
     setup: ['--port', '--model', '--client-dir'],
@@ -62,7 +62,7 @@ function probe(r, action = 'status') {
     let settled = false;
     const finish = value => { if (settled) return; settled = true; clearTimeout(timer); resolve(value); req.destroy(); };
     const req = http.request({ hostname: '127.0.0.1', port: r.port, path: `/control/${action}`,
-      method: action === 'stop' || action.startsWith('reserve-usage/') ? 'POST' : 'GET', agent: false,
+      method: action === 'stop' || action.startsWith('reserve-usage/') || action.startsWith('credit-fallback/') ? 'POST' : 'GET', agent: false,
       headers: { authorization: `Bearer ${r.controlToken}` },
     }, res => {
       let size = 0; const chunks = [];
@@ -241,6 +241,7 @@ async function start(opts, port) {
     server = await startServer({ port, credentials: router.credentials, onSelect: router.select,
       maxBytes: limits.max_request_bytes, timeoutMs: limits.idle_timeout_ms, maxHeaderBytes: limits.max_header_bytes,
       usageStatus: router.usageStatus, refreshUsage: router.refresh, setReserveUsage: router.setAllowReserveUsage,
+      setCreditFallback: router.setCreditFallback,
       routingStatus: router.status, controlToken: r.controlToken, instanceId: r.instanceId, onStop: stop });
     try { await writePrivate(runtime, JSON.stringify(r)); } catch (e) { await server.close(); await router.close(); throw e; }
     void router.refresh();
@@ -267,6 +268,7 @@ global-disable                              Restore both Codex connection settin
 usage [--account ID]                        Read reported limits via official CLI
 usage-status [--refresh]                    Read shared usage; optionally refresh in background
 reserve-usage [--enabled true|false]         Read or change reserve usage without restarting
+credit-fallback --account ID [--enabled true|false]  Read or change account credit fallback
 start [--port NUMBER] [--background]        Start or report existing instance
 status                                     Verify selected instance
 stop                                       Stop selected instance (idempotent)
@@ -299,6 +301,27 @@ CODEX_GATEWAY_HOME selects private state. The global and openai-route commands e
       if (result?.routing?.allow_reserve_usage !== enabled) throw error('reserve_usage_unavailable', 'Update the gateway backend before changing reserve usage.', 'status');
     }
     return output({ ok: true, code: 'reserve_usage', allow_reserve_usage: enabled });
+  }
+  if (command === 'credit-fallback') {
+    const id = opts['--account'], value = opts['--enabled'];
+    if (!id) throw error('invalid_arguments', 'credit-fallback requires --account.');
+    await getAccount(root, id);
+    if (value === undefined) return output({ ok: true, code: 'credit_fallback', account: id, allow_credit_fallback: await readCreditFallback(root, id) });
+    if (!['true', 'false'].includes(value)) throw error('invalid_arguments', '--enabled must be true or false.');
+    const enabled = value === 'true';
+    await ensureState(root);
+    const running = await locked(async () => {
+      const r = await saved();
+      if (r && await probe(r)) return r;
+      if (r && alive(r.pid)) throw error('runtime_unavailable', 'Runtime cannot be verified.', 'status');
+      await writeCreditFallback(root, id, enabled);
+      return null;
+    });
+    if (running) {
+      const result = await probe(running, `credit-fallback/${id}/${value}`);
+      if (result?.account !== id || result?.allow_credit_fallback !== enabled) throw error('credit_fallback_unavailable', 'Update the gateway backend before changing credit fallback.', 'status');
+    }
+    return output({ ok: true, code: 'credit_fallback', account: id, allow_credit_fallback: enabled });
   }
   if (command === 'accounts') return output({ ok: true, code: 'accounts', accounts: await listAccounts(root) });
   if (command === 'account-add') return output({ ok: true, code: 'account_added', account: await addAccount(root, opts['--label']) });

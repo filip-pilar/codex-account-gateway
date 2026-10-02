@@ -7,7 +7,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { once } from 'node:events';
 import net from 'node:net';
-import { addAccount, renameAccount, listAccounts, selectedAccount, selectAccount, getAccount, accountRoot } from '../src/accounts.mjs';
+import { addAccount, renameAccount, listAccounts, selectedAccount, selectAccount, getAccount, accountRoot, readCreditFallback, writeCreditFallback } from '../src/accounts.mjs';
 import { ensureState, writePrivate } from '../src/state.mjs';
 import { readUsage, normalizeUsage } from '../src/usage.mjs';
 async function fixture(fn) {
@@ -73,11 +73,42 @@ test('usage preserves separate buckets, clamps percentages, and never invents mi
     other: { primary: { usedPercent: 110 }, secondary: { usedPercent: -20 } },
     unknown: { primary: { usedPercent: null } },
   }});
-  assert.deepEqual(result[0], { id: 'codex', primary: { remaining_percent: 64, window_minutes: 300, resets_at: 100 }, secondary: null });
+  assert.deepEqual(result[0], { id: 'codex', primary: { remaining_percent: 64, window_minutes: 300, resets_at: 100 }, secondary: null, credits: null });
   assert.equal(result[1].primary.remaining_percent, 0); assert.equal(result[1].secondary.remaining_percent, 100);
   assert.equal(result[2].primary, null); assert.doesNotMatch(JSON.stringify(result), /secret/);
   assert.deepEqual(normalizeUsage({}), []);
 });
+
+test('credit balances retain zero, fractional and unlimited values without copying arbitrary text', () => {
+  const normalize = credits => normalizeUsage({ rateLimits: { credits } })[0].credits;
+  assert.deepEqual(normalize({ hasCredits: true, unlimited: false, balance: '62706.25' }),
+    { has_credits: true, unlimited: false, balance: 62706.25 });
+  assert.deepEqual(normalize({ hasCredits: false, unlimited: false, balance: '0' }),
+    { has_credits: false, unlimited: false, balance: 0 });
+  assert.deepEqual(normalize({ hasCredits: false, unlimited: true, balance: null }),
+    { has_credits: false, unlimited: true, balance: null });
+  for (const balance of ['', 'private detail', '-1', 'Infinity', '9'.repeat(400)]) {
+    assert.equal(normalize({ hasCredits: true, unlimited: false, balance }).balance, null);
+  }
+  assert.equal(normalize(null), null);
+  assert.equal(normalize({ balance: '0' }), null);
+});
+
+test('credit permission defaults off, stays per account across renames, and rejects unsafe state', () => fixture(async root => {
+  const other = await addAccount(root, 'Other');
+  assert.equal(await readCreditFallback(root, 'default'), false);
+  await writeCreditFallback(root, 'default', true);
+  await renameAccount(root, 'default', 'Renamed');
+  const accounts = await listAccounts(root);
+  assert.equal(accounts[0].allow_credit_fallback, true);
+  assert.equal(accounts[1].allow_credit_fallback, false);
+  assert.equal((await stat(join(root, 'credit-fallback.json'))).mode & 0o777, 0o600);
+  await writeCreditFallback(root, 'default', false);
+  assert.equal(await readCreditFallback(root, 'default'), false);
+  await assert.rejects(writeCreditFallback(root, other.id, 'true'), { code: 'invalid_arguments' });
+  await symlink(join(root, 'credit-fallback.json'), join(accountRoot(root, other.id), 'credit-fallback.json'));
+  await assert.rejects(writeCreditFallback(root, other.id, true), /Symbolic links/);
+}));
 test('usage RPC only initializes and reads limits; inherited provider secrets are stripped', () => fixture(async(root, auth) => {
   await auth(root);
   const executable = join(root, 'codex-fixture');

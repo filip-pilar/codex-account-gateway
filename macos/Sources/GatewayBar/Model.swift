@@ -8,6 +8,8 @@ struct Account: Decodable, Identifiable {
     let label: String
     let selected: Bool
     let authenticated: Bool
+    var allow_credit_fallback: Bool? = nil
+    var allowsCreditFallback: Bool { allow_credit_fallback == true }
 }
 struct Reply: Decodable {
     let ok: Bool
@@ -265,6 +267,19 @@ func shellQuote(_ value: String) -> String { "'" + value.replacingOccurrences(of
         await poll()
     }
 
+    func setCreditFallback(_ account: Account, enabled: Bool) async {
+        guard !busy, !isDemo else { return }
+        busy = true
+        do {
+            let reply = try await backend.reply(["credit-fallback", "--account", account.id, "--enabled", enabled ? "true" : "false"])
+            guard reply.ok else { throw GatewayFailure(code: reply.code) }
+            message = enabled ? "Credit fallback allowed for \(account.label)." : "Credit fallback disabled for \(account.label)."
+            isError = false
+        } catch { report(error) }
+        busy = false
+        await poll()
+    }
+
     func setGlobalProvider(_ enabled: Bool) async {
         guard !busy, !isDemo else { return }
         busy = true
@@ -392,6 +407,7 @@ func shellQuote(_ value: String) -> String { "'" + value.replacingOccurrences(of
         case "usage_timeout": return "Usage check timed out. Try refreshing later."
         case "usage_unavailable": return "Usage unavailable. Try refreshing later."
         case "reserve_usage_unavailable": return "Could not update reserve usage. Restart the gateway if its backend has not been updated, then try again."
+        case "credit_fallback_unavailable": return "Could not update credit fallback. Restart the gateway if its backend has not been updated, then try again."
         case "usage_status_unavailable": return "Gateway usage status is unavailable. Restart the gateway to load the updated backend."
         case "port_in_use": return "Port 8787 is occupied. Stop the other service before starting."
         case "client_directory_exists": return "Choose a new folder name; that folder already exists."

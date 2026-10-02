@@ -1,4 +1,4 @@
-import { listAccounts, selectedAccount, accountRoot, selectAccount, accountError } from './accounts.mjs';
+import { listAccounts, selectedAccount, accountRoot, selectAccount, accountError, writeCreditFallback } from './accounts.mjs';
 import { readAuth } from './state.mjs';
 import { writeReserveUsage } from './reserve.mjs';
 import { readUsage } from './usage.mjs';
@@ -9,9 +9,12 @@ const MAX_USAGE_AGE_MS = 5 * 60_000;
 const failureCategories = new Set(['timeout', 'cli_unavailable', 'login_required', 'cancelled',
   'child_exit', 'pipe_error', 'output_limit', 'invalid_response', 'rpc_error']);
 
-export function weeklyWindow(usage) {
+export function coreBucket(usage) {
   const buckets = usage?.buckets ?? [];
-  const bucket = buckets.find(item => item.id === 'codex') ?? (buckets.length === 1 ? buckets[0] : null);
+  return buckets.find(item => item.id === 'codex') ?? (buckets.length === 1 ? buckets[0] : null);
+}
+export function weeklyWindow(usage) {
+  const bucket = coreBucket(usage);
   return [bucket?.primary, bucket?.secondary].find(window => window?.window_minutes === 10080) ?? null;
 }
 
@@ -20,7 +23,7 @@ export function weeklyWindow(usage) {
 // otherwise eligible account. Credentials are read locally for each request.
 export function createRouter({ root, usage = readUsage, now = Date.now, intervalMs = CHECK_INTERVAL_MS,
   allowReserveUsage = false, select = id => selectAccount(root, id) }) {
-  const snapshots = new Map(), diagnostics = new Map(), cancellation = new AbortController();
+  const snapshots = new Map(), diagnostics = new Map(), exhaustions = new Map(), cancellation = new AbortController();
   let checking, timer, closed = false, queue = Promise.resolve(), failedChecks = 0, nextCheckAt = null;
   let state = 'checking_usage', account = null;
 
@@ -39,7 +42,15 @@ export function createRouter({ root, usage = readUsage, now = Date.now, interval
     return window;
   };
   const atReserve = id => currentWindow(id)?.remaining_percent <= WEEKLY_RESERVE;
+  const exhausted = id => (exhaustions.get(id)?.size ?? 0) > 0;
   const degraded = id => !freshWindow(id) || !!diagnostics.get(id)?.last_error;
+  const creditEligible = item => {
+    const bucket = coreBucket(snapshots.get(item.id)?.usage);
+    const credits = bucket?.credits;
+    return item.allow_credit_fallback && !degraded(item.id) &&
+      ![bucket?.primary, bucket?.secondary].some(window => window?.resets_at != null && window.resets_at * 1000 <= now()) &&
+      (credits?.unlimited === true || credits?.has_credits === true && credits.balance !== 0);
+  };
   const status = () => ({ mode: 'automatic', weekly_reserve_percent: WEEKLY_RESERVE, allow_reserve_usage: allowReserveUsage,
     state: state === 'ready' && degraded(account) ? 'usage_degraded' : state, account });
 
@@ -49,28 +60,30 @@ export function createRouter({ root, usage = readUsage, now = Date.now, interval
     account = (await selectedAccount(root)).id;
     const start = Math.max(0, accounts.findIndex(item => item.id === account));
     const ordered = [...accounts.slice(start), ...accounts.slice(0, start)];
-    const eligible = ordered.filter(item => item.authenticated && !atReserve(item.id));
+    const eligible = ordered.filter(item => item.authenticated && !atReserve(item.id) && !exhausted(item.id));
     // Keep the selected account even if its telemetry fails. When switching,
     // prefer a fresh positive reading over an account with unknown usage.
     const candidates = [
       ...eligible.filter(item => item.id === account),
       ...eligible.filter(item => item.id !== account && freshWindow(item.id)),
       ...eligible.filter(item => item.id !== account && !freshWindow(item.id)),
-      ...(allowReserveUsage ? ordered.filter(item => item.authenticated && atReserve(item.id)) : []),
+      ...(allowReserveUsage ? ordered.filter(item => item.authenticated && atReserve(item.id) && !exhausted(item.id)) : []),
     ];
-    for (const candidate of candidates) {
+    const fallback = ordered.filter(item => item.authenticated && creditEligible(item) && !candidates.includes(item));
+    for (const candidate of [...candidates, ...fallback]) {
       let auth;
       try { auth = await readAuth(accountRoot(root, candidate.id), { create: false }); }
       catch { candidate.authenticated = false; continue; }
       if (closed) throw accountError('usage_unavailable', 'Gateway is stopping.');
       if (candidate.id !== account) await select(candidate.id);
       account = candidate.id;
-      state = degraded(account) ? 'usage_degraded' : 'ready';
+      state = fallback.includes(candidate) ? 'credit_fallback' : degraded(account) ? 'usage_degraded' : 'ready';
       return auth;
     }
-    state = accounts.some(item => item.authenticated) ? 'weekly_reserve_reached' : 'login_required';
-    throw accountError(state, state === 'weekly_reserve_reached'
-      ? 'All available accounts have reached the 5% weekly reserve.' : 'Sign in to an account.');
+    state = !accounts.some(item => item.authenticated) ? 'login_required'
+      : accounts.some(item => item.authenticated && exhausted(item.id)) ? 'usage_limit_reached' : 'weekly_reserve_reached';
+    throw accountError(state, state === 'login_required' ? 'Sign in to an account.'
+      : 'No account has eligible included usage or permitted credit fallback.');
   }
   function refresh() {
     if (closed) return Promise.resolve();
@@ -93,6 +106,19 @@ export function createRouter({ root, usage = readUsage, now = Date.now, interval
             try {
               const result = await usage(accountRoot(root, item.id), { signal: cancellation.signal });
               if (closed) return;
+              // A missing window or elapsed reset must not clear a confirmed
+              // exhaustion. Only a fresh reading of the same window can do so.
+              const blocked = exhaustions.get(item.id) ?? new Set();
+              const bucket = coreBucket(result);
+              for (const slot of ['primary', 'secondary']) {
+                const reported = bucket?.[slot];
+                if (!Number.isFinite(reported?.remaining_percent) ||
+                    reported.resets_at != null && reported.resets_at * 1000 <= now()) continue;
+                const key = reported.window_minutes ?? slot;
+                if (reported.remaining_percent <= 0) blocked.add(key);
+                else blocked.delete(key);
+              }
+              exhaustions.set(item.id, blocked);
               const window = weeklyWindow(result);
               if (!Number.isFinite(window?.remaining_percent)) {
                 // Preserve a good snapshot, but allow short-window details on a
@@ -117,12 +143,12 @@ export function createRouter({ root, usage = readUsage, now = Date.now, interval
           }
         }));
         if (closed) return;
-        for (const cache of [snapshots, diagnostics]) {
+        for (const cache of [snapshots, diagnostics, exhaustions]) {
           for (const id of cache.keys()) if (!listing.some(item => item.id === id)) cache.delete(id);
         }
         await serial(choose);
       } catch (error) {
-        state = ['weekly_reserve_reached', 'login_required'].includes(error.code) ? error.code : 'usage_unavailable';
+        state = ['weekly_reserve_reached', 'usage_limit_reached', 'login_required'].includes(error.code) ? error.code : 'usage_unavailable';
       } finally {
         failedChecks = succeeded ? 0 : Math.min(failedChecks + 1, 4);
       }
@@ -147,9 +173,20 @@ export function createRouter({ root, usage = readUsage, now = Date.now, interval
         allowReserveUsage = enabled;
         try { await choose(); }
         catch (error) {
-          if (!['weekly_reserve_reached', 'login_required'].includes(error.code)) throw error;
+          if (!['weekly_reserve_reached', 'usage_limit_reached', 'login_required'].includes(error.code)) throw error;
         }
         return status();
+      });
+    },
+    setCreditFallback(id, enabled) {
+      return serial(async () => {
+        if (closed) throw accountError('usage_unavailable', 'Gateway is stopping.');
+        await writeCreditFallback(root, id, enabled);
+        try { await choose(); }
+        catch (error) {
+          if (!['weekly_reserve_reached', 'usage_limit_reached', 'login_required'].includes(error.code)) throw error;
+        }
+        return { account: id, allow_credit_fallback: enabled, routing: status() };
       });
     },
     async usageStatus() {
@@ -157,6 +194,7 @@ export function createRouter({ root, usage = readUsage, now = Date.now, interval
       return { checking: !!checking, next_check_at: nextCheckAt, accounts: accounts.map(item => ({
         account: item.id, checked_at: snapshots.get(item.id)?.usage.checked_at ?? null,
         buckets: snapshots.get(item.id)?.usage.buckets ?? [], stale: degraded(item.id),
+        included_usage_exhausted: exhausted(item.id),
         diagnostics: diagnostics.get(item.id) ?? { last_attempt_at: null, last_success_at: null,
           last_error: null, consecutive_failures: 0 },
       })) };

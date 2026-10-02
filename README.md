@@ -2,7 +2,7 @@
 
 **Automatically switch ChatGPT accounts for Codex CLI without changing your local endpoint.**
 
-Keep separate account profiles behind one loopback gateway, with usage visibility and controls in the CLI or native Mac menu-bar app. Sign in to your backing accounts once. The gateway checks usage automatically and switches to another account when the current account reaches **5% weekly remaining**. Requests already running finish on their original account. If every account is confirmed at the reserve, new requests pause until fresh usage becomes available. Enable **Allow reserve usage** in Settings to continue on the selected account when every account reaches the reserve; accounts above 5% remain preferred and upstream usage limits still apply. Usage-fetch failures alone do not stop requests: the selected account stays usable with a usage warning, so the 5% reserve is not a strict cap during telemetry outages.
+Keep separate account profiles behind one loopback gateway, with usage visibility and controls in the CLI or native Mac menu-bar app. Sign in to your backing accounts once. The gateway checks usage automatically and switches to another account when the current account reaches **5% weekly remaining** or a reported included-usage window is exhausted. Requests already running finish on their original account. Enable **Allow reserve usage** in Settings to use remaining included allowance below 5%. Enable **Allow credit fallback** in an account's details to let that account continue through its reserve into available credits after other included usage is unavailable. Both settings default off. Usage-fetch failures alone do not stop otherwise eligible accounts: delayed reports, startup, and active requests mean these controls are not strict spending caps.
 
 **Current scope: Codex CLI and an opt-in Desktop connection.** A single existing-task turn completed through an alternate backing profile; broader desktop compatibility is unverified.
 
@@ -81,7 +81,7 @@ node src/cli.mjs account-add --label Work --json
 
 Use the returned account ID with `login --account ID`. Login is interactive; the user completes it. All signed-in profiles join the pool automatically. The gateway keeps its current account while weekly usage is above 5%, then tries the next usable account in list order, wrapping around. It does not switch back merely because an earlier account resets.
 
-Usage checks run on startup and every minute, without inference. The threshold applies to reported usage; polling and requests already in progress can take an account below 5%. Short-window limits are not switching triggers. `account-select --account ID` remains available when idle, subject to the same reserve on subsequent requests. See [account commands](docs/cli.md#account-selection-and-usage).
+Usage checks run on startup and every minute, without inference. The threshold applies to reported usage; polling and requests already in progress can take an account below 5%. Exhausted short windows also trigger switching. Account details display reported credit balances. `account-select --account ID` remains available when idle, subject to the same routing policy on subsequent requests. See [account commands](docs/cli.md#account-selection-and-usage).
 
 ## Operation
 

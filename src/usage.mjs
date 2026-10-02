@@ -12,12 +12,19 @@ function window(value) {
     resets_at: Number.isFinite(value.resetsAt) && value.resetsAt > 0 ? value.resetsAt : null,
   };
 }
+function credits(value) {
+  if (!value || typeof value.hasCredits !== 'boolean' || typeof value.unlimited !== 'boolean') return null;
+  const balance = typeof value.balance === 'string' && /^\d+(\.\d+)?$/.test(value.balance) ? Number(value.balance) : NaN;
+  return { has_credits: value.hasCredits, unlimited: value.unlimited,
+    balance: Number.isFinite(balance) ? balance : null };
+}
 export function normalizeUsage(result) {
   const buckets = result?.rateLimitsByLimitId;
   const source = buckets && Object.keys(buckets).length ? Object.entries(buckets) : [['codex', result?.rateLimits]];
   return source.filter(([, value]) => value && typeof value === 'object').map(([id, value]) => ({
     id,
     primary: window(value.primary), secondary: window(value.secondary),
+    credits: credits(value.credits),
   }));
 }
 // Ask the official CLI for limits only. Never start a thread or request inference.

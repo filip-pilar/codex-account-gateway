@@ -35,6 +35,7 @@ else if (process.argv.includes('app-server')) {
   if(process.env.OPENAI_API_KEY || process.env.CODEX_API_KEY || process.env.OPENAI_BASE_URL) process.exit(4);
   console.log('fixture login');
 }
+
 `, {mode:0o700});
   const env = {...process.env, CODEX_GATEWAY_HOME:root, PATH:bin};
   const run = (args, extra = {}) => new Promise((resolve, reject) => {
@@ -388,4 +389,20 @@ test('reserve CLI defaults off, persists while stopped, applies live, and surviv
   assert.equal((await run(['stop', '--json'])).value.code, 'stopped');
   assert.equal((await run(['start', '--background', '--port', port, '--json'])).value.code, 'started');
   assert.equal((await run(['status', '--json'])).value.routing.allow_reserve_usage, true);
+}));
+
+test('credit CLI defaults off, validates input, applies live, and persists across restart', () => fixture(async ({ run, auth, freePort, root }) => {
+  const setting = async (...args) => (await run(['credit-fallback', '--account', 'default', ...args, '--json'])).value;
+  assert.equal((await setting()).allow_credit_fallback, false);
+  assert.equal((await setting('--enabled', 'yes')).code, 'invalid_arguments');
+  assert.equal((await run(['credit-fallback', '--json'])).value.code, 'invalid_arguments');
+  assert.equal((await setting('--enabled', 'true')).allow_credit_fallback, true);
+  assert.equal((await stat(join(root, 'credit-fallback.json'))).mode & 0o777, 0o600);
+  await auth();
+  await run(['start', '--background', '--port', String(await freePort()), '--json']);
+  assert.equal((await setting('--enabled', 'false')).allow_credit_fallback, false);
+  assert.equal((await setting('--enabled', 'true')).allow_credit_fallback, true);
+  await run(['stop', '--json']);
+  await run(['start', '--background', '--port', String(await freePort()), '--json']);
+  assert.equal((await run(['accounts', '--json'])).value.accounts[0].allow_credit_fallback, true);
 }));

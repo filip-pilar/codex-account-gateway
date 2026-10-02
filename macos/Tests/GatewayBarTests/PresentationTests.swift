@@ -22,7 +22,8 @@ final class PresentationTests: XCTestCase {
         XCTAssertEqual(status("checking_usage").tone, .neutral)
         XCTAssertEqual(status("usage_degraded").title, "Ready")
         XCTAssertEqual(status("usage_degraded").notice, "Usage unavailable; requests continuing.")
-        for state in ["weekly_reserve_reached", "usage_unavailable", "login_required"] {
+        XCTAssertEqual(status("credit_fallback").title, "Credit fallback")
+        for state in ["weekly_reserve_reached", "usage_limit_reached", "usage_unavailable", "login_required"] {
             XCTAssertEqual(status(state).title, "Paused")
             XCTAssertEqual(status(state).tone, .caution)
             XCTAssertNotNil(status(state).notice)
@@ -42,7 +43,7 @@ final class PresentationTests: XCTestCase {
         XCTAssertTrue(status(91, error: true).canSelect)
         XCTAssertFalse(status(5, error: true).canSelect)
         XCTAssertTrue(status(5.1).canSelect)
-        XCTAssertEqual(status(0).title, "Weekly reserve reached")
+        XCTAssertEqual(status(0).title, "Included usage exhausted")
         let signedOut = Account(id: "third", label: "Extra", selected: false, authenticated: false)
         XCTAssertEqual(AccountStatus(account: signedOut, weekly: nil, usageError: false).title, "Sign in required")
         XCTAssertFalse(AccountStatus(account: signedOut, weekly: nil, usageError: true).canSelect)
@@ -67,6 +68,7 @@ final class PresentationTests: XCTestCase {
         await model.setAutomaticRun(true)
         await model.setGlobalProvider(false)
         await model.setReserveUsage(true)
+        await model.setCreditFallback(model.accounts[0], enabled: true)
         XCTAssertFalse(model.allowReserveUsage)
         let added = await model.add(label: "Test")
         let renamed = await model.rename(model.accounts[0], to: "Changed")

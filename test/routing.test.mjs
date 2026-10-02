@@ -11,9 +11,14 @@ import { createRouter, weeklyWindow } from '../src/routing.mjs';
 import { startServer } from '../src/server.mjs';
 
 const limits = (remaining, reset = null) => ({ buckets: [{ id: 'codex',
-  primary: { remaining_percent: 0, window_minutes: 300, resets_at: null },
+  primary: { remaining_percent: 80, window_minutes: 300, resets_at: null },
   secondary: { remaining_percent: remaining, window_minutes: 10080, resets_at: reset },
 }] });
+const credited = (remaining, credits = { has_credits: true, unlimited: false, balance: 120 }) => {
+  const result = limits(remaining);
+  result.buckets[0].credits = credits;
+  return result;
+};
 async function fixture(fn) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'gateway-routing-')));
   const second = await addAccount(root, 'Second');
@@ -266,7 +271,7 @@ test('reserve opt-in resumes immediately, prefers replenished accounts, and can 
   assert.equal((await router.credentials()).account, 'fixture-account-0');
   readings.set(root, limits(0));
   await router.refresh();
-  assert.equal((await router.credentials()).account, 'fixture-account-0');
+  assert.equal((await router.credentials()).account, 'fixture-account-1', 'reserve permission cannot bypass an exhausted allowance');
   readings.set(paths[1], limits(90));
   await router.refresh();
   assert.equal((await router.credentials()).account, 'fixture-account-1');
@@ -274,8 +279,8 @@ test('reserve opt-in resumes immediately, prefers replenished accounts, and can 
   await router.refresh();
   assert.equal((await router.credentials()).account, 'fixture-account-1');
   await router.setAllowReserveUsage(false);
-  assert.equal(router.status().state, 'weekly_reserve_reached');
-  await assert.rejects(router.credentials(), { code: 'weekly_reserve_reached' });
+  assert.equal(router.status().state, 'usage_limit_reached');
+  await assert.rejects(router.credentials(), { code: 'usage_limit_reached' });
 }));
 
 test('reserve control authenticates, leaves active requests intact, and forwards upstream limits once', () => fixture(async ({ paths, readings, router }) => {
@@ -302,6 +307,125 @@ test('reserve control authenticates, leaves active requests intact, and forwards
     const result = await pending;
     assert.equal(result.status, 429);
     assert.equal(await result.text(), 'quota-limit');
+    assert.equal(calls, 1);
+  } finally { held.resolve(); await pending; await server.close(); }
+}));
+
+test('credit fallback is per account, lower priority than included usage, and separate from reserve permission', () => fixture(async ({ root, second, paths, readings, router }) => {
+  readings.set(root, credited(0));
+  readings.set(paths[1], credited(0));
+  await router.refresh();
+  await router.setAllowReserveUsage(true);
+  await assert.rejects(router.credentials(), { code: 'usage_limit_reached' });
+  await router.setCreditFallback(second.id, true);
+  assert.equal((await router.credentials()).account, 'fixture-account-1');
+  assert.equal(router.status().state, 'credit_fallback');
+  readings.set(root, limits(2));
+  await router.refresh();
+  assert.equal((await router.credentials()).account, 'fixture-account-0', 'included reserve wins over credit usage');
+  await router.setAllowReserveUsage(false);
+  assert.equal((await router.credentials()).account, 'fixture-account-1');
+  readings.set(root, limits(70));
+  await router.refresh();
+  assert.equal((await router.credentials()).account, 'fixture-account-0');
+  await router.setCreditFallback(second.id, false);
+  readings.set(root, limits(0));
+  await router.refresh();
+  await router.select(second.id);
+  await assert.rejects(router.credentials(), { code: 'usage_limit_reached' });
+}));
+
+test('short-window exhaustion switches accounts even when weekly allowance remains', () => fixture(async ({ root, paths, readings, router }) => {
+  const shortLimit = credited(90);
+  shortLimit.buckets[0].primary.remaining_percent = 0;
+  readings.set(root, shortLimit);
+  await router.setCreditFallback('default', true);
+  await router.refresh();
+  assert.equal((await router.credentials()).account, 'fixture-account-1');
+  readings.set(paths[1], limits(0));
+  await router.refresh();
+  assert.equal((await router.credentials()).account, 'fixture-account-0');
+  assert.equal(router.status().state, 'credit_fallback');
+  await router.setCreditFallback('default', false);
+  await assert.rejects(router.credentials(), { code: 'usage_limit_reached' });
+}));
+
+test('partial reports cannot hide or clear a confirmed short-window exhaustion', () => fixture(async ({ root, paths, readings, router }) => {
+  await router.refresh();
+  readings.set(paths[1], limits(0));
+  readings.set(root, { buckets: [{ id: 'codex', primary: { remaining_percent: 0, window_minutes: 300 } }] });
+  await router.refresh();
+  await assert.rejects(router.credentials(), { code: 'usage_limit_reached' });
+  assert.equal((await router.usageStatus()).accounts[0].included_usage_exhausted, true);
+  const partial = limits(90);
+  partial.buckets[0].primary = null;
+  readings.set(root, partial);
+  await router.refresh();
+  await assert.rejects(router.credentials(), { code: 'usage_limit_reached' });
+  readings.set(root, limits(90));
+  await router.refresh();
+  assert.equal((await router.credentials()).account, 'fixture-account-0');
+  assert.equal((await router.usageStatus()).accounts[0].included_usage_exhausted, false);
+}));
+
+test('fallback rejects missing, zero, failed, stale, and unrelated credits; replenishment resumes', () => fixture(async ({ root, paths, readings, router, advance }) => {
+  readings.set(paths[1], limits(0));
+  await router.setCreditFallback('default', true);
+  for (const credits of [null, { has_credits: false, unlimited: false, balance: 10 }, { has_credits: true, unlimited: false, balance: 0 }]) {
+    readings.set(root, credited(0, credits));
+    await router.refresh();
+    await assert.rejects(router.credentials(), { code: 'usage_limit_reached' });
+  }
+  const unrelated = credited(0, null);
+  unrelated.buckets.push({ id: 'images', credits: { has_credits: true, unlimited: true, balance: null } });
+  readings.set(root, unrelated);
+  await router.refresh();
+  await assert.rejects(router.credentials(), { code: 'usage_limit_reached' });
+  readings.set(root, credited(0, { has_credits: false, unlimited: true, balance: null }));
+  await router.refresh();
+  assert.equal((await router.credentials()).account, 'fixture-account-0');
+  readings.set(root, new Error('private failure'));
+  await router.refresh();
+  await assert.rejects(router.credentials(), { code: 'usage_limit_reached' });
+  readings.set(root, credited(0));
+  await router.refresh();
+  advance(300_000);
+  await assert.rejects(router.credentials(), { code: 'usage_limit_reached' });
+  await router.refresh();
+  assert.equal((await router.credentials()).account, 'fixture-account-0');
+  const expiredShort = credited(0);
+  expiredShort.buckets[0].primary.resets_at = 399;
+  readings.set(root, expiredShort);
+  await router.refresh();
+  await assert.rejects(router.credentials(), { code: 'usage_limit_reached' });
+}));
+
+test('credit control authenticates and disabling it neither interrupts nor replays an active request', () => fixture(async ({ paths, readings, router }) => {
+  for (const path of paths) readings.set(path, credited(0));
+  await router.refresh();
+  const began = Promise.withResolvers(), held = Promise.withResolvers();
+  let calls = 0;
+  const server = await startServer({ port: 0, credentials: router.credentials, controlToken: 'fixture-control',
+    setCreditFallback: router.setCreditFallback,
+    transport: async () => { calls++; began.resolve(); await held.promise; return new Response('unchanged', { status: 429 }); } });
+  const base = `http://127.0.0.1:${server.port}`;
+  const control = (enabled, token = 'fixture-control') => fetch(`${base}/control/credit-fallback/default/${enabled}`, {
+    method: 'POST', headers: { authorization: `Bearer ${token}` },
+  });
+  let pending;
+  try {
+    assert.equal((await control(true, 'wrong')).status, 403);
+    assert.equal((await control(true)).status, 200);
+    pending = fetch(`${base}/v1/responses`, { method: 'POST', body: '{}' });
+    await began.promise;
+    assert.equal((await control(false)).status, 200);
+    const blocked = await fetch(`${base}/v1/responses`, { method: 'POST', body: '{}' });
+    assert.equal(blocked.status, 503);
+    assert.equal((await blocked.json()).error.code, 'usage_limit_reached');
+    held.resolve();
+    const response = await pending;
+    assert.equal(response.status, 429);
+    assert.equal(await response.text(), 'unchanged');
     assert.equal(calls, 1);
   } finally { held.resolve(); await pending; await server.close(); }
 }));

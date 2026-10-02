@@ -2,6 +2,25 @@ import XCTest
 @testable import GatewayBar
 
 final class UsageTests: XCTestCase {
+    func testCreditsDecodeAndAccountSelectionRequiresFreshOptInAfterExhaustion() throws {
+        let json = #"{"checked_at":"2026-10-02T10:00:00Z","buckets":[{"id":"codex","primary":{"remaining_percent":0,"window_minutes":300},"secondary":{"remaining_percent":80,"window_minutes":10080},"credits":{"has_credits":true,"unlimited":false,"balance":62706.25}}]}"#
+        let usage = try JSONDecoder().decode(Usage.self, from: Data(json.utf8))
+        XCTAssertEqual(usage.coreBucket?.credits?.balance, 62706.25)
+        XCTAssertTrue(usage.exhausted)
+        var account = Account(id: "default", label: "Default", selected: false, authenticated: true)
+        func state(_ error: Bool = false) -> AccountStatus {
+            AccountStatus(account: account, weekly: usage.weeklyWindow, usageError: error, allowReserveUsage: true, usage: usage)
+        }
+        XCTAssertFalse(state().canSelect)
+        account.allow_credit_fallback = true
+        XCTAssertTrue(state().canSelect)
+        XCTAssertFalse(state(true).canSelect)
+        XCTAssertEqual(UsageCredits(has_credits: false, unlimited: true, balance: nil).balanceText, "Unlimited")
+        XCTAssertFalse(UsageCredits(has_credits: true, unlimited: false, balance: 0).available)
+        XCTAssertEqual(UsageCredits(has_credits: true, unlimited: false, balance: nil).balanceText, "Available · balance unavailable")
+        let older = #"{"id":"default","label":"Default","selected":false,"authenticated":true}"#
+        XCTAssertFalse(try JSONDecoder().decode(Account.self, from: Data(older.utf8)).allowsCreditFallback)
+    }
     func testSharedUsageDecodesRetainedReadingsAndDoesNotMisdiagnoseFetchFailuresAsLoginFailures() throws {
         let json = #"{"ok":true,"code":"usage_status","usage_status":{"checking":false,"next_check_at":null,"accounts":[{"account":"default","checked_at":"2026-09-24T10:30:00Z","buckets":[{"id":"codex","primary":{"remaining_percent":80,"window_minutes":10080,"resets_at":null}}],"stale":true,"diagnostics":{"last_attempt_at":"2026-09-24T10:31:00Z","last_success_at":"2026-09-24T10:30:00Z","last_error":"rpc_error","consecutive_failures":1}}]}}"#
         let reply = try JSONDecoder().decode(Reply.self, from: Data(json.utf8))

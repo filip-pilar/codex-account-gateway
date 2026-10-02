@@ -12,7 +12,8 @@ struct UsageSnapshot: Decodable {
     let buckets: [UsageBucket]
     let stale: Bool
     let diagnostics: UsageDiagnostics
-    var usage: Usage? { checked_at.map { Usage(checked_at: $0, buckets: buckets) } }
+    var included_usage_exhausted: Bool? = nil
+    var usage: Usage? { checked_at.map { Usage(checked_at: $0, buckets: buckets, included_usage_exhausted: included_usage_exhausted) } }
     var notice: String? {
         switch diagnostics.last_error {
         case "login_required": return "Sign in to this account first."
@@ -55,22 +56,39 @@ struct UsageBucket: Decodable, Identifiable {
     let id: String
     let primary: UsageWindow?
     let secondary: UsageWindow?
+    var credits: UsageCredits? = nil
     var windows: [UsageWindow] {
         [primary, secondary].compactMap { $0 }.sorted {
             ($0.window_minutes == 10_080 ? 0 : 1) < ($1.window_minutes == 10_080 ? 0 : 1)
         }
     }
 }
+struct UsageCredits: Decodable {
+    let has_credits: Bool
+    let unlimited: Bool
+    let balance: Double?
+    var available: Bool { unlimited || has_credits && balance != 0 }
+    var balanceText: String {
+        if unlimited { return "Unlimited" }
+        if let balance { return balance.formatted() }
+        return has_credits ? "Available · balance unavailable" : "None available"
+    }
+}
 struct Usage: Decodable {
     let checked_at: String
     let buckets: [UsageBucket]
+    var included_usage_exhausted: Bool? = nil
     // Match the reported duration, not primary/secondary order or plan price.
     // With multiple buckets, only the explicitly identified core bucket may
     // supply the summary. Other buckets stay visible in usage details.
+    var coreBucket: UsageBucket? {
+        buckets.first(where: { $0.id == "codex" }) ?? (buckets.count == 1 ? buckets.first : nil)
+    }
     var weeklyWindow: UsageWindow? {
-        let bucket = buckets.first(where: { $0.id == "codex" }) ?? (buckets.count == 1 ? buckets.first : nil)
+        let bucket = coreBucket
         return [bucket?.primary, bucket?.secondary].compactMap { $0 }.first { $0.window_minutes == 10_080 }
     }
+    var exhausted: Bool { included_usage_exhausted ?? (coreBucket?.windows.contains { $0.remaining_percent <= 0 } == true) }
     var checkedText: String {
         let fractional = ISO8601DateFormatter()
         fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
