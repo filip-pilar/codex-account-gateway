@@ -98,7 +98,8 @@ Enable **Settings → Keep gateway running** in the Mac app to launch at login a
 
 ## Gateway boundaries
 
-- HTTP routes: `/v1/responses`, `/v1/responses/compact`, `/v1/alpha/search`, `/v1/images/generations`, and `/v1/images/edits`. WebSocket clients receive an HTTP fallback response.
+- Chat HTTP routes: `/v1/responses`, `/v1/responses/compact`, `/v1/alpha/search`, `/v1/images/generations`, and `/v1/images/edits`. Responses WebSocket clients receive an HTTP fallback response.
+- Opt-in [WebRTC v3 voice](docs/realtime.md) forwards call creation and a control WebSocket with account binding across reconnects. Audio travels directly over WebRTC; separate client overrides are required.
 - Bodies stream unchanged, including compression and multipart data. Model selection, schema validation, and turn-state lifetime belong to the client and upstream.
 - The gateway binds only to `127.0.0.1`, checks Host, and rejects browser Origin requests. Local inference routes trust local processes; control routes require a private token. Keep the port private.
 - Caller credentials are replaced with the isolated backing login. The gateway never logs bodies, follows upstream redirects, or retries inference.

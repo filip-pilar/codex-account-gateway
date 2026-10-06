@@ -32,14 +32,14 @@ function options() {
     'reserve-usage': ['--enabled'], 'credit-fallback': ['--account', '--enabled'], 'global-status': [], 'global-enable': ['--port'], 'global-disable': [],
     'openai-route-status': [], 'openai-route-enable': ['--port'], 'openai-route-disable': [],
     start: ['--port', '--background'], stop: [], status: [], doctor: ['--port'],
-    setup: ['--port', '--model', '--client-dir'],
+    setup: ['--port', '--model', '--client-dir', '--realtime'],
   }[command];
   if (!Array.isArray(allowed)) throw error('invalid_arguments', 'Unknown command. Run --help.');
   const opts = {};
   for (let i = 0; i < args.length; i++) {
     const key = args[i];
     if (key !== '--json' && !allowed.includes(key) || key in opts) throw error('invalid_arguments', 'Unknown or duplicate option. Run --help.');
-    if (['--json', '--background', '--refresh'].includes(key)) opts[key] = true;
+    if (['--json', '--background', '--refresh', '--realtime'].includes(key)) opts[key] = true;
     else {
       if (!args[i + 1] || args[i + 1].startsWith('--')) throw error('invalid_arguments', `Missing value for ${key}.`);
       opts[key] = args[++i];
@@ -177,17 +177,17 @@ async function cliVersion() {
     p.once('exit', code => finish(code === 0 ? out.match(/\bcodex(?:-cli)?\s+(\d+\.\d+\.\d+(?:[-+][\w.-]+)?)/)?.[1] ?? null : null));
   });
 }
-function config(model, port) {
+function config(model, port, realtime = false) {
   return `model = ${JSON.stringify(model)}
 model_provider = "codex-gateway"
 
-${gatewayProvider(port)}`;
+${realtime ? `experimental_realtime_webrtc_call_base_url = "http://127.0.0.1:${port}/backend-api/codex"\nexperimental_realtime_ws_base_url = "ws://127.0.0.1:${port}/v1"\n\n` : ''}${gatewayProvider(port)}`;
 }
 const inside = (a, b) => { const r = relative(a, b); return r === '' || (r !== '..' && !r.startsWith(`..${sep}`) && !isAbsolute(r)); };
 async function setup(opts, port) {
   const model = opts['--model'];
   if (!model || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/.test(model)) throw error('invalid_arguments', 'setup requires --model with an explicit model identifier.');
-  const toml = config(model, port), target = opts['--client-dir'];
+  const toml = config(model, port, opts['--realtime']), target = opts['--client-dir'];
   if (!target) return output({ ok: true, code: 'configuration', config: toml, message: toml });
   if (!isAbsolute(target)) throw error('invalid_arguments', '--client-dir must be absolute.');
   const dir = resolve(target), repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -273,7 +273,7 @@ start [--port NUMBER] [--background]        Start or report existing instance
 status                                     Verify selected instance
 stop                                       Stop selected instance (idempotent)
 doctor [--port NUMBER]                      Local checks only
-setup --model MODEL [--port NUMBER] [--client-dir NEW_ABSOLUTE_DIRECTORY]
+setup --model MODEL [--port NUMBER] [--client-dir NEW_ABSOLUTE_DIRECTORY] [--realtime]
 All commands except login accept --json. See docs/cli.md.
 CODEX_GATEWAY_HOME selects private state. The global and openai-route commands explicitly edit user-level Codex config.` });
   if (command === 'setup') return setup(opts, port);

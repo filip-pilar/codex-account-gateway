@@ -27,3 +27,30 @@ export function requestUpstream(url, { method, headers, body, signal, maxHeaderS
     })().catch(error => request.destroy(error));
   });
 }
+
+// The gateway owns cancellation after upgrade; no WebSocket framing library is
+// needed for an unchanged control tunnel. Non-101 responses remain HTTP streams.
+export function upgradeUpstream(url, { headers, signal, maxHeaderSize }) {
+  const target = new URL(url);
+  target.protocol = target.protocol === 'wss:' ? 'https:' : target.protocol === 'ws:' ? 'http:' : target.protocol;
+  return new Promise((resolve, reject) => {
+    const client = target.protocol === 'https:' ? https : http;
+    const request = client.request(target, { method: 'GET', headers: Object.fromEntries(headers), signal, maxHeaderSize });
+    const receivedHeaders = response => {
+      const received = new Headers();
+      for (const [name, value] of Object.entries(response.headers)) {
+        if (value !== undefined) received.set(name, Array.isArray(value) ? value.join(', ') : value);
+      }
+      return received;
+    };
+    request.once('response', response => resolve({ status: response.statusCode, headers: receivedHeaders(response), body: response }));
+    request.once('upgrade', (response, socket, head) => {
+      socket.pause();
+      socket.on('error', () => socket.destroy());
+      if (signal.aborted) { socket.destroy(); reject(signal.reason); return; }
+      resolve({ status: response.statusCode, headers: receivedHeaders(response), socket, head });
+    });
+    request.once('error', reject);
+    request.end();
+  });
+}

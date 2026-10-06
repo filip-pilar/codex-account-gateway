@@ -8,7 +8,7 @@ swift test --package-path macos
 npm run build:macos
 ```
 
-Tests use disposable profiles, a fake `codex` executable, and loopback HTTP servers. They require no credentials, installed Codex, or upstream services. Rebuild the Mac app after backend changes; quit and reopen it to load the new bundle.
+Tests use disposable profiles, a fake `codex` executable, and loopback HTTP servers. They require no real credentials, installed Codex, or upstream services. Voice fixtures exercise call setup and headers, untouched control frames and handshake bytes, account binding across reconnects, errors, limits, cancellation, expiry and shutdown. See [voice compatibility and activation/rollback](realtime.md). Rebuild the Mac app after backend changes; quit and reopen it to load the new bundle.
 
 For an installed profile, `doctor --json` and `status --json` check local readiness. Local checks do not establish upstream access, model availability, or compatibility with every Codex CLI or Desktop version.
 

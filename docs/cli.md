@@ -9,7 +9,7 @@ Invoke `node src/cli.mjs COMMAND`. No global installation is required. `CODEX_GA
 | `status` | `--json` | Authenticate and verify selected runtime instance; no upstream call |
 | `stop` | `--json` | Stop verified instance and wait for cleanup, or succeed if already stopped |
 | `doctor` | `--port NUMBER`, `--json` | Aggregate local checks; no writes, inference, or expiry validation |
-| `setup` | required `--model MODEL`; `--port NUMBER`, `--client-dir NEW_ABSOLUTE_DIRECTORY`, `--json` | Return TOML or explicitly create a new private client directory |
+| `setup` | required `--model MODEL`; `--port NUMBER`, `--client-dir NEW_ABSOLUTE_DIRECTORY`, `--realtime`, `--json` | Return TOML or explicitly create a new private client directory |
 | `accounts` | none | List labels, selected profile, and local credential presence; no upstream call |
 | `account-add` | required `--label NAME` | Create a private unsigned-in account with a random ID |
 | `account-rename` | required `--account ID`, `--label NAME` | Rename a profile without changing credentials or selection |
@@ -68,7 +68,7 @@ Both settings are validated and written atomically in `~/.codex/config.toml`. Ed
 
 `openai-route-*` aliases use their own JSON response codes and `route` field for the same connection settings.
 
-The gateway serves HTTP streaming. WebSocket handshakes receive HTTP 426 so compatible Codex engines switch to HTTP immediately. See [verification](verification.md) for local and live checks.
+The gateway serves HTTP streaming. Responses WebSocket handshakes receive HTTP 426 so compatible Codex engines switch to HTTP immediately. `setup --realtime` adds separate root overrides for engine-created WebRTC v3 call setup and control; it does not enable the voice feature or edit an existing client. See [voice support, limits and activation/rollback](realtime.md). See [verification](verification.md) for local and live checks.
 
 Generated provider definitions inherit Codex's retry and stream-idle defaults; the gateway itself never retries inference. `global-enable` updates recognized managed blocks while preserving unrelated configuration. Edited blocks require manual inspection. Separately created client folders are never rewritten.
 

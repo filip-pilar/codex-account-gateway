@@ -82,6 +82,19 @@ test('unverified live PID is never reclaimed or signalled', () => fixture(async 
 test('setup requires a model and creates only a new isolated private client', () => fixture(async ({run,root,base}) => {
   assert.equal((await run(['setup','--json'])).code,2);
   const printed=await run(['setup','--model','fixture-model','--json']);assert.match(printed.value.config,/model = "fixture-model"/);await assert.rejects(access(root));
+  assert.doesNotMatch(printed.value.config, /experimental_realtime/);
+  const voice = await run(['setup', '--model', 'fixture-model', '--port', '18887', '--realtime', '--json']);
+  assert.equal(voice.value.code, 'configuration');
+  assert.match(voice.value.config, /^experimental_realtime_webrtc_call_base_url = "http:\/\/127\.0\.0\.1:18887\/backend-api\/codex"$/m);
+  assert.match(voice.value.config, /^experimental_realtime_ws_base_url = "ws:\/\/127\.0\.0\.1:18887\/v1"$/m);
+  assert.ok(voice.value.config.indexOf('experimental_realtime_ws_base_url') < voice.value.config.indexOf('[model_providers.'));
+  await assert.rejects(access(root));
+  const voiceDir = join(base, 'voice-client');
+  const createdVoice = await run(['setup', '--model', 'fixture-model', '--port', '18887', '--realtime', '--client-dir', voiceDir, '--json']);
+  assert.equal(createdVoice.value.code, 'configuration_created');
+  assert.equal(await readFile(join(voiceDir, 'config.toml'), 'utf8'), voice.value.config);
+  assert.equal((await stat(join(voiceDir, 'config.toml'))).mode & 0o777, 0o600);
+  assert.equal((await run(['setup', '--model', 'fixture', '--realtime', '--realtime', '--json'])).value.code, 'invalid_arguments');
   const dir=join(base,"client's profile");const made=await run(['setup','--model','fixture-model','--client-dir',dir,'--json']);assert.equal(made.value.code,'configuration_created');
   assert.equal((await stat(dir)).mode & 0o777,0o700);assert.equal((await stat(join(dir,'config.toml'))).mode & 0o777,0o600);
   const original=await readFile(join(dir,'config.toml'),'utf8');assert.doesNotMatch(original,/model_reasoning_effort|check_for_update_on_startup|request_max_retries|stream_max_retries|stream_idle_timeout_ms/);

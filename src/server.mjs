@@ -2,16 +2,18 @@ import http from 'node:http';
 import { once } from 'node:events';
 import { timingSafeEqual } from 'node:crypto';
 import { DEFAULT_LIMITS, validateLimits } from './limits.mjs';
-import { requestUpstream } from './transport.mjs';
+import { requestUpstream, upgradeUpstream } from './transport.mjs';
+import { createRealtime, REALTIME_CALL_PATH, REALTIME_CALL_TARGET, REALTIME_HEADERS } from './realtime.mjs';
 
 const headersToForward = ['content-type','content-encoding','content-length','accept','user-agent','openai-beta','originator','session_id','conversation_id','session-id','thread-id','x-codex-routing-hint','x-codex-turn-state','x-codex-turn-metadata','x-openai-internal-codex-responses-lite','x-codex-image-turn-id'];
 const responseHeadersToForward = ['content-type', 'content-encoding', 'content-length', 'retry-after', 'retry-after-ms', 'x-request-id', 'x-codex-turn-state', 'x-codex-routing-hint'];
 const routes = new Map(['/responses','/responses/compact','/alpha/search','/images/generations','/images/edits'].map(p => ['/v1'+p, 'https://chatgpt.com/backend-api/codex'+p]));
 const equal = (a,b) => typeof a === 'string' && Buffer.byteLength(a) === Buffer.byteLength(b) && timingSafeEqual(Buffer.from(a),Buffer.from(b));
-export async function startServer({port=8787, credentials, transport=requestUpstream, controlToken, instanceId = 'fixture', onStop=()=>{}, onSelect=null, routingStatus=()=>undefined, usageStatus=null, refreshUsage=null, setReserveUsage=null, setCreditFallback=null, maxBytes=DEFAULT_LIMITS.max_request_bytes, timeoutMs=DEFAULT_LIMITS.idle_timeout_ms, maxHeaderBytes=DEFAULT_LIMITS.max_header_bytes}) {
+export async function startServer({port=8787, credentials, transport=requestUpstream, upgradeTransport=upgradeUpstream, realtimeOptions={}, controlToken, instanceId = 'fixture', onStop=()=>{}, onSelect=null, routingStatus=()=>undefined, usageStatus=null, refreshUsage=null, setReserveUsage=null, setCreditFallback=null, maxBytes=DEFAULT_LIMITS.max_request_bytes, timeoutMs=DEFAULT_LIMITS.idle_timeout_ms, maxHeaderBytes=DEFAULT_LIMITS.max_header_bytes}) {
   const limits = validateLimits({ max_request_bytes: maxBytes, idle_timeout_ms: timeoutMs, max_header_bytes: maxHeaderBytes });
   const active = new Set();
   let selecting = false;
+  const realtime = createRealtime({ ...realtimeOptions, upgradeTransport, active, isSelecting: () => selecting, maxBytes, timeoutMs, maxHeaderBytes });
   const server = http.createServer({ maxHeaderSize: maxHeaderBytes }, async (req,res) => {
     const fail = (status, code) => {
       if (res.destroyed || res.writableEnded) return;
@@ -82,10 +84,15 @@ export async function startServer({port=8787, credentials, transport=requestUpst
     if (selecting) return fail(503, 'account_switch_in_progress');
     const queryAt = req.url.indexOf('?');
     const path = queryAt < 0 ? req.url : req.url.slice(0, queryAt);
-    const target = routes.get(path);
+    const voice = path === REALTIME_CALL_PATH;
+    const target = voice ? REALTIME_CALL_TARGET : routes.get(path);
     const url = target && target + (queryAt < 0 ? '' : req.url.slice(queryAt));
     if(req.method !== 'POST' || !url) return fail(404,'unsupported_route');
     if (Number(req.headers['content-length']) > maxBytes) return fail(413, 'request_too_large');
+    if (voice && req.headers['openai-alpha'] !== 'quicksilver=v2') return fail(400, 'realtime_v3_required');
+    const reservation = voice ? realtime.reserve() : null;
+    if (voice && !reservation) return fail(429, 'realtime_capacity');
+    let forgetCall, callDelivered = false;
     const controller = new AbortController();
     const abort = () => { controller.abort(); req.destroy(); res.destroy(); };
     active.add(abort);
@@ -124,7 +131,7 @@ export async function startServer({port=8787, credentials, transport=requestUpst
       }
       controller.signal.throwIfAborted();
       const headers=new Headers();
-      for(const name of headersToForward) if(typeof req.headers[name]==='string') headers.set(name,req.headers[name]);
+      for(const name of voice ? [...headersToForward, ...REALTIME_HEADERS] : headersToForward) if(typeof req.headers[name]==='string') headers.set(name,req.headers[name]);
       headers.set('authorization',`Bearer ${auth.token}`);
       headers.set('chatgpt-account-id',auth.account);
       headers.set('accept-encoding','identity');
@@ -135,6 +142,11 @@ export async function startServer({port=8787, credentials, transport=requestUpst
       // context recovery and rate-limit handling. Nothing is logged or replayed.
       const responseHeaders={'cache-control':'no-store'};
       for(const name of responseHeadersToForward) if(upstream.headers.has(name)) responseHeaders[name]=upstream.headers.get(name);
+      if (voice && upstream.status >= 200 && upstream.status < 300) {
+        try { forgetCall = reservation.commit(upstream.headers.get('location'), auth); }
+        catch { upstream.body?.destroy?.(); return fail(502, 'invalid_realtime_location'); }
+        responseHeaders.location = upstream.headers.get('location');
+      }
       res.writeHead(upstream.status,responseHeaders);
       res.flushHeaders();
       if(upstream.body) for await(const chunk of upstream.body) {
@@ -143,17 +155,24 @@ export async function startServer({port=8787, credentials, transport=requestUpst
         progress();
       }
       res.end();
+      if (forgetCall) {
+        if (!res.writableFinished) await once(res, 'finish', { signal: controller.signal });
+        callDelivered = true;
+      }
     } catch { if(!res.headersSent) fail(controller.signal.aborted?504:502,controller.signal.aborted?'upstream_timeout':'upstream_unavailable'); else res.destroy(); }
     finally {
+      reservation?.release();
+      if (!callDelivered) forgetCall?.();
       clearTimeout(timer);
       controller.abort();
       if (!req.complete) { if (res.writableFinished) req.destroy(); else res.once('finish', () => req.destroy()); }
       active.delete(abort);
     }
   });
-  server.on('upgrade', (req, socket) => {
+  server.on('upgrade', async (req, socket, head) => {
     // Codex treats 426 as an immediate HTTP fallback; a 404 triggers retries.
     const local = !req.headers.origin && req.headers.host === `127.0.0.1:${server.address()?.port}`;
+    if (local && await realtime.upgrade(req, socket, head)) return;
     const responses = req.method === 'GET' && req.url.split('?')[0] === '/v1/responses' && req.headers.upgrade?.toLowerCase() === 'websocket';
     const status = !local ? '403 Forbidden' : responses ? '426 Upgrade Required' : '404 Not Found';
     socket.on('error', () => socket.destroy());
@@ -164,5 +183,5 @@ export async function startServer({port=8787, credentials, transport=requestUpst
   // stalled uploads and streams without cutting off healthy long requests.
   server.requestTimeout=0; server.headersTimeout=60000;
   server.listen(port,'127.0.0.1'); await once(server,'listening');
-  return { port:server.address().port, close:()=>new Promise(resolve=>{for (const abort of active) abort(); server.close(resolve);server.closeAllConnections();}) };
+  return { port:server.address().port, close:()=>new Promise(resolve=>{realtime.close(); for (const abort of active) abort(); server.close(resolve);server.closeAllConnections();}) };
 }
