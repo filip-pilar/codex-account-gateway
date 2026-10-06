@@ -4,7 +4,7 @@ The gateway supports engine-created Codex WebRTC v3 calls. It forwards call setu
 
 ## Client configuration
 
-Both overrides must be **root TOML keys**, before any table headings. For a gateway listening on port 18887:
+Both overrides must be **root TOML keys**, before any table headings. Keep any existing managed built-in OpenAI route block at the very start of the file and put the voice keys immediately after it. For a gateway listening on port 18887:
 
 ```toml
 experimental_realtime_webrtc_call_base_url = "http://127.0.0.1:18887/backend-api/codex"
