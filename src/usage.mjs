@@ -15,6 +15,8 @@ function window(value) {
 function credits(value) {
   if (!value || typeof value.hasCredits !== 'boolean' || typeof value.unlimited !== 'boolean') return null;
   const balance = typeof value.balance === 'string' && /^\d+(\.\d+)?$/.test(value.balance) ? Number(value.balance) : NaN;
+  // An invalid reported balance must not become a missing balance that permits fallback.
+  if (value.balance != null && !Number.isFinite(balance)) return null;
   return { has_credits: value.hasCredits, unlimited: value.unlimited,
     balance: Number.isFinite(balance) ? balance : null };
 }
@@ -29,7 +31,7 @@ export function normalizeUsage(result) {
 }
 // Ask the official CLI for limits only. Never start a thread or request inference.
 // Credentials, RPC errors and unrelated notifications never leave this function.
-export async function readUsage(root, { executable = 'codex', timeoutMs = 15000, signal } = {}) {
+async function readAccountRPC(root, method, params, { executable = 'codex', timeoutMs = 15000, signal } = {}) {
   try { await readAuth(root, { create: false }); }
   catch { throw Object.assign(accountError('login_required', 'Sign in to this account first.'), { category: 'login_required' }); }
   if (signal?.aborted) throw Object.assign(accountError('usage_unavailable', 'Usage check cancelled.'), { category: 'cancelled' });
@@ -45,7 +47,7 @@ export async function readUsage(root, { executable = 'codex', timeoutMs = 15000,
       signal?.removeEventListener('abort', abort);
       child.stdin.destroy(); child.stdout.destroy(); child.kill('SIGKILL');
       if (code) reject(Object.assign(accountError(code, code === 'usage_timeout' ? 'Usage check timed out.' : 'Usage is unavailable. Try refreshing later.'), { category }));
-      else resolve({ checked_at: new Date().toISOString(), buckets: normalizeUsage(value) });
+      else resolve(value);
     };
     const timer = setTimeout(() => finish('usage_timeout', null, 'timeout'), timeoutMs);
     const abort = () => finish('usage_unavailable', null, 'cancelled');
@@ -67,7 +69,7 @@ export async function readUsage(root, { executable = 'codex', timeoutMs = 15000,
           if (message.error || !message.result) return finish('usage_unavailable', null, message.error ? 'rpc_error' : 'invalid_response');
           initialized = true;
           send({ method: 'initialized' });
-          send({ id: 2, method: 'account/rateLimits/read' });
+          send({ id: 2, method, ...(params ? { params } : {}) });
         } else if (message.id === 2 && initialized) {
           return finish(message.error || !message.result ? 'usage_unavailable' : null, message.result,
             message.error ? 'rpc_error' : 'invalid_response');
@@ -76,4 +78,20 @@ export async function readUsage(root, { executable = 'codex', timeoutMs = 15000,
     });
     send({ id: 1, method: 'initialize', params: { clientInfo: { name: 'codex_gateway_usage', title: 'Codex Gateway', version: '0.1.0' }, capabilities: null } });
   });
+}
+
+export async function readUsage(root, options) {
+  const result = await readAccountRPC(root, 'account/rateLimits/read', null, options);
+  return { checked_at: new Date().toISOString(), buckets: normalizeUsage(result) };
+}
+
+export async function readActivationModel(root, options) {
+  const result = await readAccountRPC(root, 'model/list', { includeHidden: false, limit: 100 }, options);
+  const models = (result.data ?? []).filter(item => !item.hidden && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/.test(item.model ?? '') &&
+    (!item.inputModalities || item.inputModalities.includes('text')));
+  const model = models.find(item => item.isDefault) ?? models[0];
+  if (!model) throw accountError('activation_model_unavailable', 'No activation model was reported.');
+  const efforts = (model.supportedReasoningEfforts ?? []).map(item => item.reasoningEffort);
+  const effort = ['none', 'minimal', 'low', 'medium', 'high'].find(item => efforts.includes(item));
+  return { model: model.model, ...(effort ? { effort } : {}) };
 }

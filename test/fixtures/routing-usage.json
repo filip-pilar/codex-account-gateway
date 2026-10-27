@@ -1,0 +1,11 @@
+{
+  "creditAccount": {
+    "buckets": [{"id":"codex","primary":{"remaining_percent":0,"window_minutes":300,"resets_at":null},"secondary":{"remaining_percent":84,"window_minutes":10080,"resets_at":null},"credits":{"has_credits":true,"unlimited":false,"balance":60065.773254}}]
+  },
+  "reserveAccount": {
+    "buckets": [{"id":"codex","primary":{"remaining_percent":70,"window_minutes":300,"resets_at":null},"secondary":{"remaining_percent":4,"window_minutes":10080,"resets_at":null},"credits":{"has_credits":true,"unlimited":false,"balance":0.004}}]
+  },
+  "includedAccount": {
+    "buckets": [{"id":"codex","primary":{"remaining_percent":50,"window_minutes":300,"resets_at":null},"secondary":{"remaining_percent":80,"window_minutes":10080,"resets_at":null},"credits":{"has_credits":false,"unlimited":false,"balance":null}}]
+  }
+}

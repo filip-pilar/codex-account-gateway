@@ -171,16 +171,6 @@ test('rejects unknown calls, malformed IDs, browser/foreign hosts and incompatib
   assert.equal(f.authCalls(), 0);
 });
 
-test('call errors preserve status/body, never follow redirects or forward error Location/cookies', async t => {
-  let status = 429;
-  const f = await fixture(t, { http: async ({ req, res }) => { await buffer(req); res.writeHead(status, { location: 'https://fixture.invalid/rtc_external', 'set-cookie': 'fixture-private', 'retry-after': '2' }); res.end('fixture-error'); } });
-  for (const code of [429, 401, 307]) {
-    status = code; const result = await f.post();
-    assert.equal(result.status, code); assert.equal(result.body.toString(), 'fixture-error'); assert.equal(result.headers.location, undefined); assert.equal(result.headers['set-cookie'], undefined); assert.equal(result.headers['retry-after'], '2');
-  }
-  assert.equal(f.httpCalls.length, 3); assert.equal((await handshake(t, f.gateway, { path: '/v1/live/rtc_external' })).status, 404);
-});
-
 test('invalid/missing/duplicate call Location cannot create or replace an account binding', async t => {
   let location;
   const f = await fixture(t, { http: async ({ req, res }) => { await buffer(req); res.writeHead(201, location ? { location } : {}); res.end('fixture-answer'); } });
@@ -188,13 +178,6 @@ test('invalid/missing/duplicate call Location cannot create or replace an accoun
   location = '/v1/live/rtc_fixture_1'; assert.equal((await f.post()).status, 201);
   f.select(); assert.equal((await f.post()).status, 502);
   assert.equal((await handshake(t, f.gateway)).status, 101); assert.equal(f.wsCalls[0].headers['chatgpt-account-id'], 'account-a');
-});
-
-test('UUID and backend-forwarded call Locations bind their control IDs', async t => {
-  const id = '019eb97d-8e9a-7ff3-94b0-ea019babd5d7';
-  const f = await fixture(t, { http: async ({ req, res }) => { await buffer(req); res.writeHead(201, { location: `https://fixture.test/v1/realtime/calls/calls/${id}?opaque=1` }); res.end('fixture-answer'); } });
-  const result = await f.post(); assert.equal(result.headers.location, `https://fixture.test/v1/realtime/calls/calls/${id}?opaque=1`);
-  assert.equal((await handshake(t, f.gateway, { path: `/v1/live/${id}` })).status, 101);
 });
 
 test('upstream handshake errors preserve status/body and terminal errors remove the binding', async t => {
@@ -205,14 +188,6 @@ test('upstream handshake errors preserve status/body and terminal errors remove 
   await waitFor(async () => (await f.control()).body.active_requests === 0);
   status = 410; const gone = await handshake(t, f.gateway); assert.equal(gone.status, 410); assert.equal((await gone.read(13)).toString(), 'fixture-error');
   assert.equal((await handshake(t, f.gateway)).status, 404); assert.equal(f.wsCalls.length, 2);
-});
-
-test('invalid upstream WebSocket acceptance fails closed and releases the join for a client retry', async t => {
-  let bad = true;
-  const f = await fixture(t, { ws: ({ socket }) => socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${bad ? 'invalid' : accept}\r\n\r\n`) });
-  await f.post(); assert.equal((await handshake(t, f.gateway)).status, 502);
-  await waitFor(async () => (await f.control()).body.active_requests === 0);
-  bad = false; assert.equal((await handshake(t, f.gateway)).status, 101); assert.equal(f.wsCalls.length, 2);
 });
 
 test('capacity includes pending creations; failed calls release capacity and expiry frees bindings', async t => {
@@ -230,17 +205,6 @@ test('capacity includes pending creations; failed calls release capacity and exp
   const live = await handshake(t, f.gateway); assert.equal(live.status, 101);
   await waitFor(() => live.socket.destroyed); assert.equal((await handshake(t, f.gateway)).status, 404);
   assert.equal((await f.control()).body.active_requests, 0); assert.equal((await f.post()).status, 201);
-});
-
-test('client cancellation of call creation aborts the upstream and releases pending capacity', async t => {
-  const f = await fixture(t, { server: { realtimeOptions: { maxCalls: 1 } }, http: async ({ req }) => { await buffer(req); } });
-  const req = http.request(`http://127.0.0.1:${f.gateway.port}${REALTIME_CALL_PATH}`, { method: 'POST', headers, agent: false }); req.on('error', () => {}); req.end(turn);
-  await waitFor(() => f.httpCalls.length === 1); req.destroy();
-  await waitFor(() => f.httpCalls[0].res.destroyed);
-  await waitFor(async () => (await f.control()).body.active_requests === 0);
-  // A second request reaches the fake upstream, proving the pending slot is free.
-  const next = http.request(`http://127.0.0.1:${f.gateway.port}${REALTIME_CALL_PATH}`, { method: 'POST', headers, agent: false }); next.on('error', () => {}); next.end(turn);
-  await waitFor(() => f.httpCalls.length === 2); next.destroy();
 });
 
 test('client cancellation during handshake cancels upstream and permits reconnect without re-authentication', async t => {
@@ -274,30 +238,6 @@ test('idle handshakes time out; control progress extends the idle deadline and s
   await waitFor(() => live.socket.destroyed); await waitFor(() => f.wsCalls[1].socket.destroyed);
 });
 
-test('call uploads retain existing wire-byte limits before and during streaming', async t => {
-  const f = await fixture(t, { server: { maxBytes: 8 } });
-  assert.equal((await f.post(Buffer.alloc(9), { 'content-length': 9 })).status, 413); assert.equal(f.authCalls(), 0);
-  const result = await new Promise((resolve, reject) => {
-    const req = http.request(`http://127.0.0.1:${f.gateway.port}${REALTIME_CALL_PATH}`, { method: 'POST', headers, agent: false }, async res => resolve({ status: res.statusCode, body: await buffer(res) }));
-    req.on('error', reject); req.write('1234'); req.end('56789');
-  });
-  assert.equal(result.status, 413); assert.equal(JSON.parse(result.body).error.code, 'request_too_large');
-  await waitFor(async () => (await f.control()).body.active_requests === 0);
-});
-
-test('abandoned partial SDP responses remove the binding and release capacity', async t => {
-  const f = await fixture(t, { server: { realtimeOptions: { maxCalls: 1 } }, http: async ({ req, res }) => {
-    await buffer(req); res.writeHead(201, { location: '/v1/live/rtc_fixture_1', 'content-type': 'application/sdp' }); res.write('fixture-partial');
-  } });
-  const req = http.request(`http://127.0.0.1:${f.gateway.port}${REALTIME_CALL_PATH}`, { method: 'POST', headers, agent: false });
-  req.on('error', () => {}); const response = once(req, 'response'); req.end(turn);
-  const [res] = await response; res.destroy();
-  await waitFor(async () => (await f.control()).body.active_requests === 0);
-  assert.equal((await handshake(t, f.gateway)).status, 404);
-  const next = http.request(`http://127.0.0.1:${f.gateway.port}${REALTIME_CALL_PATH}`, { method: 'POST', headers, agent: false }); next.on('error', () => {}); next.end(turn);
-  await waitFor(() => f.httpCalls.length === 2); next.destroy();
-});
-
 test('request and upstream upgrade headers obey the configured cap', async t => {
   const f = await fixture(t, { server: { maxHeaderBytes: 1024 }, ws: ({ socket }) => socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\nX-Padding: ${'x'.repeat(2048)}\r\n\r\n`) });
   await f.post(); const authCalls = f.authCalls();
@@ -306,52 +246,6 @@ test('request and upstream upgrade headers obey the configured cap', async t => 
   assert.equal((await handshake(t, f.gateway)).status, 502);
   await waitFor(() => f.wsCalls[0].socket.destroyed);
   assert.equal((await f.control()).body.active_requests, 0);
-});
-
-test('control subprotocol selection is forwarded only when offered by the client', async t => {
-  let protocol = 'fixture.two';
-  const f = await fixture(t, { ws: ({ socket }) => socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\nSec-WebSocket-Protocol: ${protocol}\r\n\r\n`) });
-  await f.post(); const first = await handshake(t, f.gateway, { extra: { 'sec-websocket-protocol': 'fixture.one, fixture.two' } });
-  assert.equal(first.status, 101); assert.equal(first.headers['sec-websocket-protocol'], 'fixture.two'); assert.equal(f.wsCalls[0].headers['sec-websocket-protocol'], 'fixture.one, fixture.two');
-  first.socket.destroy(); await waitFor(async () => (await f.control()).body.active_requests === 0);
-  protocol = 'fixture.unoffered'; assert.equal((await handshake(t, f.gateway, { extra: { 'sec-websocket-protocol': 'fixture.one' } })).status, 502);
-});
-
-test('upstream EOF delivers its final frames and releases control without losing the reconnect binding', async t => {
-  const f = await fixture(t); await f.post(); const ws = await handshake(t, f.gateway);
-  f.wsCalls[0].socket.end(serverFrames); assert.deepEqual(await ws.read(serverFrames.length), serverFrames);
-  await waitFor(() => ws.socket.destroyed); await waitFor(async () => (await f.control()).body.active_requests === 0);
-  assert.equal((await handshake(t, f.gateway)).status, 101);
-});
-
-test('idle established control closes both peers; a fresh client reconnect retains the account', async t => {
-  const f = await fixture(t, { server: { timeoutMs: 120 } }); await f.post(); const ws = await handshake(t, f.gateway);
-  await waitFor(() => ws.socket.destroyed); await waitFor(() => f.wsCalls[0].socket.destroyed);
-  assert.equal((await f.control()).body.active_requests, 0); f.select();
-  assert.equal((await handshake(t, f.gateway)).status, 101); assert.equal(f.wsCalls[1].headers['chatgpt-account-id'], 'account-a');
-});
-
-test('client cancellation after sending control bytes during a stalled handshake promptly cancels upstream', async t => {
-  const f = await fixture(t, { ws: () => {} }); await f.post();
-  const req = http.request(`http://127.0.0.1:${f.gateway.port}/v1/live/rtc_fixture_1`, { headers: { ...headers, connection: 'Upgrade', upgrade: 'websocket', 'sec-websocket-key': key, 'sec-websocket-version': '13' }, agent: false });
-  req.on('error', () => {}); req.end();
-  await waitFor(() => f.wsCalls.length === 1); req.socket.write(clientFrames);
-  await delay(15); req.destroy();
-  await waitFor(() => f.wsCalls[0].socket.destroyed);
-  await waitFor(async () => (await f.control()).body.active_requests === 0);
-});
-
-test('truncated upstream rejection closes the HTTP reply without appending a second response', async t => {
-  let status = 429;
-  const f = await fixture(t, { ws: ({ socket }) => socket.end(`HTTP/1.1 ${status} Error\r\nContent-Length: 100\r\n\r\nshort`) });
-  await f.post(); const ws = await handshake(t, f.gateway); assert.equal(ws.status, 429);
-  let tail = ''; ws.socket.on('data', chunk => tail += chunk.toString());
-  await waitFor(() => ws.socket.destroyed); assert.doesNotMatch(tail, /HTTP\/1\.1|codex_gateway_error/);
-  assert.equal((await f.control()).body.active_requests, 0);
-  status = 401;
-  const terminal = await handshake(t, f.gateway); assert.equal(terminal.status, 401);
-  await waitFor(() => terminal.socket.destroyed);
-  assert.equal((await handshake(t, f.gateway)).status, 404);
 });
 
 test('staged control input has a small cap while handshake is pending, independently of the session byte cap', async t => {

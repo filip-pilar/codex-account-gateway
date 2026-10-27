@@ -56,6 +56,16 @@ else if (process.argv.includes('app-server')) {
   try {await fn({base,root,run,auth,freePort});}
   finally {await run(['stop','--json']).catch(()=>{}); await rm(base,{recursive:true,force:true});}
 }
+test('weekly activation setting defaults off, is private, and updates a running backend without inference', () => fixture(async ({ run, auth, freePort, root }) => {
+  const setting = async (...args) => (await run(['weekly-activation', ...args, '--json'])).value;
+  assert.equal((await setting()).auto_activate_weekly_windows, false);
+  assert.equal((await setting('--enabled', 'yes')).code, 'invalid_arguments');
+  assert.equal((await setting('--enabled', 'true')).auto_activate_weekly_windows, true);
+  assert.equal((await stat(join(root, 'weekly-activation.json'))).mode & 0o777, 0o600);
+  await auth(); await run(['start', '--background', '--port', String(await freePort()), '--json']);
+  assert.equal((await setting('--enabled', 'false')).auto_activate_weekly_windows, false);
+  assert.equal((await run(['usage-status', '--json'])).value.usage_status.auto_activate_weekly_windows, false);
+}));
 test('background readiness, concurrent starts, crash recovery and port conflict', {timeout:25000}, () => fixture(async ({run,auth,freePort,root}) => {
   await auth();const port=await freePort();
   const results=await Promise.all([run(['start','--background','--port',String(port),'--json']),run(['start','--background','--port',String(port),'--json'])]);

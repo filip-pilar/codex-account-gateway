@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { changeGlobalConfig, readGlobalConfig, setGlobalConfig } from '../src/global-config.mjs';
 
-test('global config update preserves private permissions and supports reversal', async () => {
+test('global config updates and reversal preserve private permissions and foreign tables', async () => {
   const dir = await realpath(await mkdtemp(join(tmpdir(), 'gateway-global-')));
   const path = join(dir, 'config.toml');
   const source = 'model_provider = "other"\n[model_providers.other]\nname = "Other"\n';
@@ -13,16 +13,22 @@ test('global config update preserves private permissions and supports reversal',
     await writeFile(path, source, { mode: 0o600 });
     assert.equal((await readGlobalConfig(path)).enabled, false);
     assert.equal((await setGlobalConfig(true, 8787, path)).enabled, true);
-    const enabled = await readFile(path, 'utf8');
-    await setGlobalConfig(true, 8787, path);
-    assert.equal(await readFile(path, 'utf8'), enabled);
+    const foreign = '\n[memories]\ngenerate_memories = true\n\n[hooks."fixture"]\ntrusted_hash = "fixture-hash"\n';
+    const enabled = (await readFile(path, 'utf8')).replace('# codex-gateway: provider definition end', foreign + '# codex-gateway: provider definition end');
+    await writeFile(path, enabled.replace('requires_openai_auth = true', 'requires_openai_auth = false'));
+    assert.equal((await readGlobalConfig(path)).needs_update, true);
+    assert.equal((await setGlobalConfig(true, 8787, path)).needs_update, false);
+    assert.ok((await readFile(path, 'utf8')).includes(foreign.trimStart()));
     assert.equal((await stat(path)).mode & 0o777, 0o600);
     assert.equal((await setGlobalConfig(false, undefined, path)).enabled, false);
-    assert.equal(await readFile(path, 'utf8'), source);
+    const restored = await readFile(path, 'utf8');
+    assert.ok(restored.startsWith(source));
+    assert.ok(restored.includes(foreign.trimStart()));
+    assert.doesNotMatch(restored, /codex-gateway:/);
     const link = join(dir, 'linked.toml');
     await symlink(path, link);
     await assert.rejects(setGlobalConfig(true, 8787, link));
-    assert.equal(await readFile(path, 'utf8'), source);
+    assert.equal(await readFile(path, 'utf8'), restored);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 

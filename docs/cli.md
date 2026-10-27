@@ -21,7 +21,9 @@ Invoke `node src/cli.mjs COMMAND`. No global installation is required. `CODEX_GA
 | `openai-route-enable` | optional `--port NUMBER` | Compatibility alias for `global-enable` |
 | `openai-route-disable` | none | Compatibility alias for `global-disable` |
 | `usage` | `--account ID` | One-off diagnostic read through official CLI app-server; no inference |
+| `routing` | optional `--mode automatic\|fixed`, `--account ID`, `--order ID,ID`, `--fallback VALUE` | Read or update the persisted routing policy; changes affect new requests |
 | `reserve-usage` | optional `--enabled true\|false` | Read or persist reserve usage permission; applies immediately to a running gateway |
+| `weekly-activation` | optional `--enabled true\|false` | Read or persist opt-in quota-consuming weekly activation; applies immediately while running |
 | `credit-fallback` | required `--account ID`; optional `--enabled true\|false` | Read or persist per-account credit fallback; applies immediately while running |
 | `usage-status` | `--refresh` | Read the running gateway’s shared usage cache; optionally request a background refresh |
 | `help` | `--json` | Usage |
@@ -64,7 +66,7 @@ Exit 0: requested operation succeeded. Exit 1: operational failure or unmet read
 
 **Settings → Use gateway in Codex** and `global-enable` control the same connection. Enabling updates both the default provider for new tasks and the built-in `openai` endpoint used by existing OpenAI tasks. Disabling removes both managed routes and restores the prior default provider. Restart Codex to load either change. Tasks saved with unrelated custom providers are unaffected; tasks saved with `codex-gateway` require its provider definition while using the gateway.
 
-Both settings are validated and written atomically in `~/.codex/config.toml`. Edited markers and unmanaged overrides are refused; authentication, `chatgpt_base_url`, models, and task histories are untouched. Use the running gateway's port from `status --json`; the default is 8787. `global-status` returns `enabled: true` when either managed route exists and `needs_update: true` when they are incomplete or inconsistent. Enable again to repair them, or disable to remove both. The Mac app shows **Update Connection** when needed.
+Both settings are validated and written atomically in `~/.codex/config.toml`. Changed gateway-owned tables, invalid markers, and unmanaged overrides are refused. Unrelated tables inserted inside provider comment markers are preserved during inspection, updates, and removal; authentication, `chatgpt_base_url`, models, and task histories are untouched. Use the running gateway's port from `status --json`; the default is 8787. `global-status` returns `enabled: true` when either managed route exists and `needs_update: true` when they are incomplete or inconsistent. Enable again to repair them, or disable to remove both. The Mac app shows **Update Connection** when needed.
 
 `openai-route-*` aliases use their own JSON response codes and `route` field for the same connection settings.
 
@@ -113,11 +115,32 @@ Success codes: `accounts`, `account_added`, `account_selected`, `usage`. Failure
 
 Selection is stored privately in `selected-account.json`. Added profile metadata and official CLI state live under `accounts/<id>/`. Selection writes are atomic and serialized through the gateway lifecycle lock. No existing authentication is moved or copied. See [macOS UI](macos.md).
 
+Usage snapshots additionally include per-account `checking`, `weekly_window_state` (`fixed`, `appears_unstarted`, `unknown`, or `stale`), and nullable `activation` (`state`, `last_attempt_at`, `last_error`). The shared status includes `auto_activate_weekly_windows`. Reset classification requires observations; exactly 100% alone never implies an unstarted timer. Activation states are `pending`, `verifying`, `confirmed`, `failed`, and `unconfirmed`. An interrupted persisted `pending` attempt is presented as `unconfirmed` after restart.
+
+`weekly-activation --json` reads the saved permission, default false. Add `--enabled true` to authorize small requests during running-gateway usage checks, or `--enabled false` to disable and cancel activation. Success returns `code: "weekly_activation"` and `auto_activate_weekly_windows`; unsupported or failed running-backend updates return `weekly_activation_unavailable`. This setting is private `weekly-activation.json`; per-account `weekly-activation-attempt.json` records safe attempt metadata before sending. Neither file contains credentials or model output. `usage-status --refresh` can trigger activation when enabled; standalone `usage` remains read-only. See [activation conditions, bounds, verification, and deduplication](macos.md#start-unused-weekly-windows).
+
+## Routing policy
+
+`routing --json` reads the running backend’s effective policy, or the saved policy when stopped. Mutations use authenticated local control while running and the lifecycle lock while stopped. An older backend returns `routing_policy_unavailable`; the CLI never silently writes settings behind it.
+
+```sh
+node src/cli.mjs routing --mode fixed --account ACCOUNT_ID --json
+node src/cli.mjs routing --mode automatic --order ACCOUNT_ID,default --fallback credits_then_reserve --json
+```
+
+Success returns `code: "routing_policy"`, `routing_policy`, and the current `routing` state when running. Policy fields are `mode` (`automatic` or `fixed`), nullable `fixed_account`, `account_order` (unique existing IDs), and `fallback` (`pause`, `reserve`, `credits`, `reserve_then_credits`, `credits_then_reserve`). Updates are partial; changing mode preserves the other mode’s settings. Fixed mode requires an existing account. New accounts append to priority. Unknown fields and invalid values are rejected with `invalid_arguments`, `invalid_routing_policy`, or `invalid_account`.
+
+Fixed mode routes only to `fixed_account`, using its included allowance down to reported exhaustion, then its permitted credits when fresh reports support fallback. No eligible usage or credentials pauses new requests without choosing another account. Automatic fallback order does not override fixed mode. Credit permission remains shared between modes. `account-select` also changes the fixed target when fixed mode is active, retaining its existing idle-only contract.
+
+The existing private `reserve-usage.json` atomically stores the policy plus the compatible `allow_reserve_usage` boolean. Legacy boolean-only files default to Automatic, with reserve then credits if reserve was enabled, or credits otherwise. At startup, the initial order begins with the selected account and wraps through the existing list. Per-account credit permissions and weekly activation are unchanged. An unsupported or unsafe saved policy fails closed.
+
+Changing policy does not cancel active requests or replay inference. Policy changes are serialized and affect subsequent credential selections. The control endpoint has a 64 KiB body/response cap and five-second upload deadline.
+
 ## Automatic weekly routing
 
 Every running gateway checks all signed-in accounts at startup and every 60 seconds after the preceding successful check finishes, with at most three usage CLI children at once. If no account supplies a valid reading, retries back off to two, four, then five minutes. Explicit `usage-status --refresh` requests a check immediately; concurrent refreshes share the same check. Inference requests never trigger or wait for usage reads.
 
-The selected signed-in account stays selected unless its last valid weekly reading is at or below 5%, or any included-usage window in its core bucket is exhausted. The next account with fresh usage above 5% is preferred in list order, wrapping around; accounts with unknown usage remain candidates. An account with unknown or stale usage can keep serving requests unless a retained reading confirms reserve or exhaustion. Selection persists across restarts. Exhausted short windows also trigger switching; unrelated buckets do not.
+The selected signed-in account stays selected unless its last valid weekly reading is at or below 5%, or any included-usage window in its core bucket is exhausted. The next account with fresh usage above 5% is preferred in saved priority order; accounts with unknown usage remain candidates. An account with unknown or stale usage can keep serving requests unless a retained reading confirms reserve or exhaustion. Selection persists across restarts. Exhausted short windows also trigger switching; unrelated buckets do not.
 
 Only a reported seven-day window from the `codex` bucket (or the sole reported bucket) qualifies. Missing/ambiguous data and expired reports do not replace a valid snapshot. A reading becomes stale after five minutes or its reported reset time. A confirmed reserve remains in effect until a valid new reading clears it; the clock alone does not create quota. Snapshots are memory-only, so after restart an account's usage is initially unknown. While usage is unavailable, continued requests may consume into the intended 5% reserve. This is an availability preference, not a strict spending cap.
 
@@ -129,7 +152,7 @@ Requests already in progress retain their captured credentials and finish normal
 {"mode":"automatic","weekly_reserve_percent":5,"allow_reserve_usage":false,"state":"ready","account":"default"}
 ```
 
-Routing states include `checking_usage`, `ready`, `usage_degraded`, `credit_fallback`, `weekly_reserve_reached`, `usage_limit_reached`, `usage_unavailable`, and `login_required`. `usage_degraded` means requests continue but usage is stale, missing, or the last check failed. `credit_fallback` means routing is using a permitted credit candidate; it does not confirm a charge. A runtime can be `running` while routing is paused. With no eligible candidate, confirmed exhaustion returns HTTP 503 / `usage_limit_reached`; otherwise all accounts at reserve return HTTP 503 / `weekly_reserve_reached`. Missing credentials retains HTTP 401 / `isolated_login_required`. Usage-fetch failures alone do not pause otherwise eligible accounts. `usage_unavailable` is retained for lifecycle/control failures and compatibility. Background checks resume routing when usage becomes eligible. Manual selection is subject to the same policy on subsequent requests.
+Routing states include `checking_usage`, `ready`, `usage_degraded`, `credit_fallback`, `weekly_reserve_reached`, `usage_limit_reached`, `usage_unavailable`, and `login_required`. `usage_degraded` means requests continue but usage is stale, missing, or the last check failed. `credit_fallback` means routing is using a permitted credit candidate; it does not confirm a charge. A runtime can be `running` while routing is paused. With no eligible candidate, confirmed exhaustion returns HTTP 503 / `usage_limit_reached`; otherwise all accounts at reserve return HTTP 503 / `weekly_reserve_reached`. Missing credentials retains HTTP 401 / `isolated_login_required`. Usage-fetch failures alone do not pause otherwise eligible accounts. `usage_unavailable` is retained for lifecycle/control failures and compatibility. Background checks resume routing when usage becomes eligible. Manual selection is subject to the same policy on subsequent requests. In fixed mode, `mode` is `fixed` and `account` remains the intended account even when paused.
 
 Shutdown aborts usage reads and terminates their owned CLI children. The Mac app's opt-in login item and restart monitoring are described in [automatic operation](macos.md#automatic-operation); the CLI does not install a service.
 
@@ -137,7 +160,7 @@ Shutdown aborts usage reads and terminates their owned CLI children. The Mac app
 
 `reserve-usage --json` reads `allow_reserve_usage`, defaulting to `false`. Use `reserve-usage --enabled true --json` to allow reserve usage or `--enabled false` to protect it again. Success returns code `reserve_usage`; a running backend without support or a failed control update returns `reserve_usage_unavailable`.
 
-The setting is stored privately in `reserve-usage.json` in the backing profile and survives restarts. Changes use authenticated local control while running and apply to subsequent requests immediately, without restarting Codex or the gateway. `routing.allow_reserve_usage` reports the active policy. A stopped gateway loads the saved setting at startup.
+The setting is part of the routing policy in private `reserve-usage.json` and survives restarts. This compatibility command adds or removes the reserve step in Automatic fallback without disabling an existing credit step. Fixed mode ignores the automatic fallback order. Changes use authenticated local control while running and apply to subsequent requests immediately, without restarting Codex or the gateway. `routing.allow_reserve_usage` reports the active policy. A stopped gateway loads the saved setting at startup.
 
 With permission enabled, normal automatic switching still prefers eligible accounts above 5% (then unknown usage). Only when those candidates are unavailable does it use accounts with included allowance at the reserve, starting with the selected account. A reported 0% requires separate per-account credit permission and available credits. Upstream errors remain unchanged; no request is retried or replayed. Turning permission off restores the reserve for new requests except on eligible credit-fallback accounts; existing requests finish on their captured credentials.
 
@@ -147,6 +170,6 @@ With permission enabled, normal automatic switching still prefers eligible accou
 
 The private `credit-fallback.json` file lives in that account's profile directory. Updates use authenticated local control while running and affect only subsequent requests. Renaming an account does not alter its permission.
 
-Routing prefers accounts above reserve, then unknown usage, then remaining included reserve if globally allowed, then opted-in credit candidates. Credit candidates require a fresh, successful core-bucket usage report with `unlimited: true` or `has_credits: true` and no explicit zero balance. Missing, stale, failed, or expired credit reports cannot enable fallback. Credit permission also allows consuming that account's remaining reserve, because OpenAI determines when included allowance ends and credit billing begins. No credits are purchased or reset credits consumed.
+Automatic routing prefers accounts above reserve, then unknown usage, then the configured fallback steps. The selected account is preferred within each fallback step; otherwise saved account priority applies. Credit fallback is considered only when the policy includes a credit step. Fixed mode considers only its configured account and uses its per-account credit permission. Credit candidates require a fresh, successful core-bucket usage report with `unlimited: true` or `has_credits: true` and no explicit zero balance. Missing, stale, failed, or expired credit reports cannot enable fallback. Credit permission also allows consuming that account's remaining reserve, because OpenAI determines when included allowance ends and credit billing begins. No credits are purchased or reset credits consumed.
 
 This is a routing preference, not a billing switch or spending cap. Unknown usage still permits requests under the availability policy, including during startup. Delayed telemetry, activity outside the gateway, and active requests can consume credits even when fallback is off.

@@ -45,14 +45,21 @@ function inspect(source) {
       throw failure('global_config_conflict', 'Gateway provider selection has changed.');
     const end = lines.indexOf(tableEnd, defined + 1);
     if (end < 0) throw failure('global_config_conflict', 'Gateway provider definition is incomplete.');
-    const provider = lines.slice(defined + 1, end).join('\n') + '\n';
+    // Other Codex features may insert their tables before our closing comment.
+    // The next table ends the provider; keep that foreign suffix byte-for-byte.
+    const nextTable = lines.findIndex((line, index) => index > defined + 1 && index < end && /^\s*\[/.test(line));
+    const providerEnd = nextTable < 0 ? end : nextTable;
+    const provider = lines.slice(defined + 1, providerEnd).join('\n').trimEnd() + '\n';
     const port = Number(provider.match(/^base_url = "http:\/\/127\.0\.0\.1:(\d+)\/v1"$/m)?.[1]);
     const legacy = [false, true].some(auth => provider === legacyProvider(port, auth));
     const openaiAuth = provider === gatewayProvider(port, true) || provider === legacyProvider(port, true);
     if (!Number.isInteger(port) || (!legacy && !openaiAuth && provider !== gatewayProvider(port)) ||
         Buffer.from(old, 'base64').toString('base64') !== old)
       throw failure('global_config_conflict', 'Gateway provider definition has changed.');
-    return { enabled: true, port, openaiAuth, legacy, previous: Buffer.from(old, 'base64').toString(), lines, chosen, defined, end };
+    const gatewayTable = /^\s*\[\[?\s*(?:"model_providers"|'model_providers'|model_providers)\s*\.\s*(?:"codex-gateway"|'codex-gateway'|codex-gateway)(?:\s*\.|\s*\])/;
+    if (lines.some((line, index) => index !== defined + 1 && gatewayTable.test(line)))
+      throw failure('global_config_conflict', 'Duplicate or nested gateway provider tables need inspection.');
+    return { enabled: true, port, openaiAuth, legacy, previous: Buffer.from(old, 'base64').toString(), lines, chosen, defined, end, providerEnd };
   }
   if (/^\s*\[model_providers\.(?:"codex-gateway"|codex-gateway)\]\s*$/m.test(source) ||
       /^\s*model_provider\s*=\s*["']codex-gateway["']\s*$/m.test(source))
@@ -83,7 +90,7 @@ function changeProvider(source, enabled, port) {
   if (state.enabled && enabled) {
     if (state.openaiAuth && !state.legacy && state.port === port) return source;
     const lines = state.lines;
-    lines.splice(state.defined + 1, state.end - state.defined - 1, ...gatewayProvider(port, true).trimEnd().split('\n'));
+    lines.splice(state.defined + 1, state.providerEnd - state.defined - 1, ...gatewayProvider(port, true).trimEnd().split('\n'));
     return lines.join('\n');
   }
   if (!state.enabled && !enabled) return source;
@@ -104,7 +111,8 @@ function changeProvider(source, enabled, port) {
   const before = lines.slice(0, state.chosen);
   const after = lines.slice(state.chosen + 4, state.defined);
   if (state.previous) before.push(state.previous);
-  return [...before, ...after].join('\n').replace(/\n*$/, '\n') + lines.slice(state.end + 1).join('\n');
+  return [...before, ...after].join('\n').replace(/\n*$/, '\n') +
+    lines.slice(state.providerEnd, state.end).join('\n') + (state.providerEnd < state.end ? '\n' : '') + lines.slice(state.end + 1).join('\n');
 }
 
 async function readConfig(path) {

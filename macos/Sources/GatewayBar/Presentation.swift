@@ -1,5 +1,21 @@
 import Foundation
 
+enum FeedbackScope: Equatable {
+    case overview, routing, priority, settings, add, clientSetup
+    case account(String), rename(String)
+}
+
+func accountNameError(_ value: String) -> String? {
+    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    if trimmed.isEmpty { return "Enter an account name." }
+    // Account labels use the backend's UTF-16 limit, including emoji sequences.
+    if trimmed.utf16.count > 60 { return trimmed.utf16.count == trimmed.count ? "Use no more than 60 characters." : "Name is too long (maximum 60; emoji may count as more than one)." }
+    if trimmed.unicodeScalars.contains(where: { $0.value < 32 || $0.value == 127 }) {
+        return "Use a single line without control characters."
+    }
+    return nil
+}
+
 enum StatusTone { case positive, caution, neutral }
 
 struct GatewayStatus {
@@ -13,17 +29,17 @@ struct GatewayStatus {
             case "weekly_reserve_reached":
                 title = "Paused"; notice = "No account has more than 5% weekly usage left."; tone = .caution
             case "usage_limit_reached":
-                title = "Paused"; notice = "Included usage is unavailable. No account has eligible credit fallback."; tone = .caution
+                title = "Paused"; notice = routing?.mode == "fixed" ? "This account cannot continue with its available usage." : "No account has eligible usage for the current routing settings."; tone = .caution
             case "credit_fallback":
-                title = "Credit fallback"; notice = "Continuing on an account allowed to use credits."; tone = .caution
+                title = "Running"; notice = nil; tone = .positive
             case "usage_unavailable":
                 title = "Paused"; notice = "Weekly usage unavailable. Retrying automatically."; tone = .caution
             case "usage_degraded":
-                title = "Ready"; notice = "Usage unavailable; requests continuing."; tone = .caution
+                title = "Running"; notice = nil; tone = .positive
             case "login_required":
                 title = "Paused"; notice = "Sign in to resume routing."; tone = .caution
             case "ready":
-                title = "Ready"; notice = nil; tone = .positive
+                title = "Running"; notice = nil; tone = .positive
             default:
                 title = "Checking"; notice = nil; tone = .neutral
             }
@@ -33,36 +49,6 @@ struct GatewayStatus {
             title = "Checking"; notice = nil; tone = .neutral
         } else {
             title = "Attention"; notice = "Unable to verify the gateway. Refresh to check again."; tone = .caution
-        }
-    }
-}
-
-struct AccountStatus {
-    let title: String
-    let tone: StatusTone
-    let canSelect: Bool
-    var rowNote: String? { canSelect || tone == .positive ? nil : title }
-
-    init(account: Account, weekly: UsageWindow?, usageError: Bool, allowReserveUsage: Bool = false, usage: Usage? = nil) {
-        let expired = usage?.coreBucket?.windows.contains { ($0.resets_at ?? .infinity) <= Date().timeIntervalSince1970 } == true
-        let fallback = account.allowsCreditFallback && !usageError && !expired && weekly != nil && usage?.coreBucket?.credits?.available == true
-        let exhausted = usage?.exhausted == true || weekly?.remaining_percent == 0
-        if !account.authenticated {
-            title = "Sign in required"; tone = .neutral; canSelect = false
-        } else if exhausted {
-            title = fallback ? "Credit fallback available" : "Included usage exhausted"
-            tone = .caution; canSelect = fallback && !account.selected
-        } else if let weekly, weekly.remaining_percent <= 5 {
-            title = allowReserveUsage ? (account.selected ? "Selected · Using reserve" : "Reserve available") : fallback ? "Credit fallback available" : "Weekly reserve reached"
-            tone = .caution; canSelect = (allowReserveUsage || fallback) && !account.selected
-        } else if usageError {
-            title = "Usage out of date"; tone = .caution; canSelect = !account.selected
-        } else if weekly == nil {
-            title = "Usage unavailable"; tone = .neutral; canSelect = !account.selected
-        } else {
-            title = account.selected ? "Selected" : "Available"
-            tone = account.selected ? .positive : .neutral
-            canSelect = !account.selected
         }
     }
 }

@@ -12,6 +12,8 @@ import { selectedAccount, getAccount, listAccounts, addAccount, renameAccount, s
 import { readUsage } from './usage.mjs';
 import { readReserveUsage, writeReserveUsage } from './reserve.mjs';
 import { createRouter } from './routing.mjs';
+import { readRoutingPolicy, updateRoutingPolicy } from './routing-policy.mjs';
+import { readWeeklyActivation, writeWeeklyActivation } from './activation.mjs';
 import { readLimits } from './limits.mjs';
 import { gatewayProvider, readGlobalConfig, setGlobalConfig } from './global-config.mjs';
 
@@ -29,7 +31,8 @@ function options() {
   const allowed = {
     help: [], '--help': [], '-h': [], login: ['--account'],
     accounts: [], 'account-add': ['--label'], 'account-rename': ['--account', '--label'], 'account-select': ['--account'], usage: ['--account'], 'usage-status': ['--refresh'],
-    'reserve-usage': ['--enabled'], 'credit-fallback': ['--account', '--enabled'], 'global-status': [], 'global-enable': ['--port'], 'global-disable': [],
+    'reserve-usage': ['--enabled'], 'weekly-activation': ['--enabled'], 'credit-fallback': ['--account', '--enabled'], 'global-status': [], 'global-enable': ['--port'], 'global-disable': [],
+    routing: ['--mode', '--account', '--order', '--fallback'],
     'openai-route-status': [], 'openai-route-enable': ['--port'], 'openai-route-disable': [],
     start: ['--port', '--background'], stop: [], status: [], doctor: ['--port'],
     setup: ['--port', '--model', '--client-dir', '--realtime'],
@@ -62,7 +65,7 @@ function probe(r, action = 'status') {
     let settled = false;
     const finish = value => { if (settled) return; settled = true; clearTimeout(timer); resolve(value); req.destroy(); };
     const req = http.request({ hostname: '127.0.0.1', port: r.port, path: `/control/${action}`,
-      method: action === 'stop' || action.startsWith('reserve-usage/') || action.startsWith('credit-fallback/') ? 'POST' : 'GET', agent: false,
+      method: action === 'stop' || action.startsWith('reserve-usage/') || action.startsWith('credit-fallback/') || action.startsWith('weekly-activation/') ? 'POST' : 'GET', agent: false,
       headers: { authorization: `Bearer ${r.controlToken}` },
     }, res => {
       let size = 0; const chunks = [];
@@ -128,6 +131,34 @@ async function usageStatus(r, refresh) {
     });
     const timer = setTimeout(() => finish(null), 1500);
     req.on('error', () => finish(null)); req.end();
+  });
+}
+
+async function routingPolicy(r, changes) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (value, status) => {
+      if (settled) return;
+      settled = true; clearTimeout(timer); req.destroy();
+      if (status === 200 && value?.instanceId === r.instanceId && value.routing_policy) resolve(value);
+      else {
+        const code = ['invalid_arguments', 'invalid_routing_policy', 'invalid_account'].includes(value?.error?.code)
+          ? value.error.code : 'routing_policy_unavailable';
+        reject(error(code, code === 'routing_policy_unavailable' ? 'Restart the updated gateway backend to use routing settings.' : 'Routing settings are invalid.', 'status'));
+      }
+    };
+    const body = changes ? JSON.stringify(changes) : null;
+    const req = http.request({ hostname: '127.0.0.1', port: r.port, path: '/control/routing',
+      method: body ? 'POST' : 'GET', agent: false,
+      headers: { authorization: `Bearer ${r.controlToken}`, ...(body ? { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) } : {}) } }, res => {
+      let size = 0; const chunks = [];
+      res.on('data', chunk => { size += chunk.length; if (size > 65536) finish(null); else chunks.push(chunk); });
+      res.on('error', () => finish(null));
+      res.on('end', () => { try { finish(JSON.parse(Buffer.concat(chunks).toString()), res.statusCode); } catch { finish(null); } });
+      res.on('close', () => finish(null));
+    });
+    const timer = setTimeout(() => finish(null), 5000);
+    req.on('error', () => finish(null)); req.end(body);
   });
 }
 
@@ -233,7 +264,7 @@ async function start(opts, port) {
     const limits = await readLimits(root);
     const r = { pid: process.pid, port, instanceId: randomBytes(16).toString('hex'), controlToken: randomBytes(32).toString('hex') };
     let server, stopping;
-    const router = createRouter({ root, allowReserveUsage: await readReserveUsage(root), select: id => locked(() => selectAccount(root, id)) });
+    const router = createRouter({ root, policy: await updateRoutingPolicy(root, {}), autoActivateWeeklyWindows: await readWeeklyActivation(root), select: id => locked(() => selectAccount(root, id)) });
     const stop = () => stopping ??= (async () => {
       await Promise.all([router.close(), server.close()]);
       await clearOwned(r.instanceId);
@@ -242,6 +273,8 @@ async function start(opts, port) {
       maxBytes: limits.max_request_bytes, timeoutMs: limits.idle_timeout_ms, maxHeaderBytes: limits.max_header_bytes,
       usageStatus: router.usageStatus, refreshUsage: router.refresh, setReserveUsage: router.setAllowReserveUsage,
       setCreditFallback: router.setCreditFallback,
+      setWeeklyActivation: router.setWeeklyActivation,
+      routingPolicy: router.policy, setRoutingPolicy: router.setPolicy,
       routingStatus: router.status, controlToken: r.controlToken, instanceId: r.instanceId, onStop: stop });
     try { await writePrivate(runtime, JSON.stringify(r)); } catch (e) { await server.close(); await router.close(); throw e; }
     void router.refresh();
@@ -267,7 +300,9 @@ global-enable [--port NUMBER]              Connect new and existing OpenAI tasks
 global-disable                              Restore both Codex connection settings
 usage [--account ID]                        Read reported limits via official CLI
 usage-status [--refresh]                    Read shared usage; optionally refresh in background
+routing [--mode automatic|fixed] [--account ID] [--order ID,ID] [--fallback pause|reserve|credits|reserve_then_credits|credits_then_reserve]
 reserve-usage [--enabled true|false]         Read or change reserve usage without restarting
+weekly-activation [--enabled true|false]    Opt in to quota-consuming weekly activation
 credit-fallback --account ID [--enabled true|false]  Read or change account credit fallback
 start [--port NUMBER] [--background]        Start or report existing instance
 status                                     Verify selected instance
@@ -283,6 +318,52 @@ CODEX_GATEWAY_HOME selects private state. The global and openai-route commands e
   if (command === 'global-status') return output({ ok: true, code: 'global_status', global: await readGlobalConfig() });
   if (command === 'global-enable') return output({ ok: true, code: 'global_enabled', global: await setGlobalConfig(true, port) });
   if (command === 'global-disable') return output({ ok: true, code: 'global_disabled', global: await setGlobalConfig(false) });
+  if (command === 'routing') {
+    const changes = {};
+    for (const [flag, key] of [['--mode', 'mode'], ['--account', 'fixed_account'], ['--fallback', 'fallback']])
+      if (opts[flag] !== undefined) changes[key] = opts[flag];
+    if (opts['--order'] !== undefined) changes.account_order = opts['--order'].split(',');
+    const changing = Object.keys(changes).length > 0;
+    if (!changing) {
+      const r = await saved();
+      if (r && await probe(r)) {
+        const result = await routingPolicy(r);
+        return output({ ok: true, code: 'routing_policy', routing_policy: result.routing_policy, routing: result.routing });
+      }
+      if (r && alive(r.pid)) throw error('runtime_unavailable', 'Runtime cannot be verified.', 'status');
+      return output({ ok: true, code: 'routing_policy', routing_policy: await readRoutingPolicy(root) });
+    }
+    await ensureState(root);
+    let policy;
+    const running = await locked(async () => {
+      const r = await saved();
+      if (r && await probe(r)) return r;
+      if (r && alive(r.pid)) throw error('runtime_unavailable', 'Runtime cannot be verified.', 'status');
+      policy = await updateRoutingPolicy(root, changes);
+      return null;
+    });
+    const result = running ? await routingPolicy(running, changes) : { routing_policy: policy };
+    return output({ ok: true, code: 'routing_policy', routing_policy: result.routing_policy, ...(result.routing ? { routing: result.routing } : {}) });
+  }
+  if (command === 'weekly-activation') {
+    const value = opts['--enabled'];
+    if (value === undefined) return output({ ok: true, code: 'weekly_activation', auto_activate_weekly_windows: await readWeeklyActivation(root) });
+    if (!['true', 'false'].includes(value)) throw error('invalid_arguments', '--enabled must be true or false.');
+    const enabled = value === 'true';
+    await ensureState(root);
+    const running = await locked(async () => {
+      const r = await saved();
+      if (r && await probe(r)) return r;
+      if (r && alive(r.pid)) throw error('runtime_unavailable', 'Runtime cannot be verified.', 'status');
+      await writeWeeklyActivation(root, enabled);
+      return null;
+    });
+    if (running) {
+      const result = await probe(running, `weekly-activation/${value}`);
+      if (result?.auto_activate_weekly_windows !== enabled) throw error('weekly_activation_unavailable', 'Update the gateway backend before changing weekly activation.', 'status');
+    }
+    return output({ ok: true, code: 'weekly_activation', auto_activate_weekly_windows: enabled });
+  }
   if (command === 'reserve-usage') {
     const value = opts['--enabled'];
     if (value === undefined) return output({ ok: true, code: 'reserve_usage', allow_reserve_usage: await readReserveUsage(root) });
@@ -350,6 +431,7 @@ CODEX_GATEWAY_HOME selects private state. The global and openai-route commands e
       if (r && await probe(r)) return r;
       if (r && alive(r.pid)) throw error('runtime_unavailable', 'Runtime cannot be verified.', 'status');
       await selectAccount(root, opts['--account']);
+      if ((await readRoutingPolicy(root)).mode === 'fixed') await updateRoutingPolicy(root, { fixed_account: opts['--account'] });
       return null;
     });
     if (running) await selectRunning(running, opts['--account']);

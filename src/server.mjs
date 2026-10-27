@@ -9,7 +9,7 @@ const headersToForward = ['content-type','content-encoding','content-length','ac
 const responseHeadersToForward = ['content-type', 'content-encoding', 'content-length', 'retry-after', 'retry-after-ms', 'x-request-id', 'x-codex-turn-state', 'x-codex-routing-hint'];
 const routes = new Map(['/responses','/responses/compact','/alpha/search','/images/generations','/images/edits'].map(p => ['/v1'+p, 'https://chatgpt.com/backend-api/codex'+p]));
 const equal = (a,b) => typeof a === 'string' && Buffer.byteLength(a) === Buffer.byteLength(b) && timingSafeEqual(Buffer.from(a),Buffer.from(b));
-export async function startServer({port=8787, credentials, transport=requestUpstream, upgradeTransport=upgradeUpstream, realtimeOptions={}, controlToken, instanceId = 'fixture', onStop=()=>{}, onSelect=null, routingStatus=()=>undefined, usageStatus=null, refreshUsage=null, setReserveUsage=null, setCreditFallback=null, maxBytes=DEFAULT_LIMITS.max_request_bytes, timeoutMs=DEFAULT_LIMITS.idle_timeout_ms, maxHeaderBytes=DEFAULT_LIMITS.max_header_bytes}) {
+export async function startServer({port=8787, credentials, transport=requestUpstream, upgradeTransport=upgradeUpstream, realtimeOptions={}, controlToken, instanceId = 'fixture', onStop=()=>{}, onSelect=null, routingStatus=()=>undefined, routingPolicy=null, setRoutingPolicy=null, usageStatus=null, refreshUsage=null, setReserveUsage=null, setCreditFallback=null, setWeeklyActivation=null, maxBytes=DEFAULT_LIMITS.max_request_bytes, timeoutMs=DEFAULT_LIMITS.idle_timeout_ms, maxHeaderBytes=DEFAULT_LIMITS.max_header_bytes}) {
   const limits = validateLimits({ max_request_bytes: maxBytes, idle_timeout_ms: timeoutMs, max_header_bytes: maxHeaderBytes });
   const active = new Set();
   let selecting = false;
@@ -24,6 +24,33 @@ export async function startServer({port=8787, credentials, transport=requestUpst
     };
     if(req.headers.origin || req.headers.host !== `127.0.0.1:${server.address()?.port}`) return fail(403,'local_client_required');
     if(req.url === '/health' && req.method === 'GET') { res.setHeader('content-type','application/json'); return res.end(JSON.stringify({service:'codex-gateway',version:'0.1.0'})); }
+    if (req.url === '/control/routing' && ['GET', 'POST'].includes(req.method)) {
+      if (!controlToken || !equal(req.headers.authorization, `Bearer ${controlToken}`)) return fail(403, 'invalid_control_token');
+      if (!routingPolicy || !setRoutingPolicy) return fail(501, 'routing_policy_unavailable');
+      const deadline = setTimeout(() => req.destroy(), 5000);
+      try {
+        if (req.method === 'POST') {
+          let size = 0; const chunks = [];
+          for await (const chunk of req.iterator({ destroyOnReturn: false })) {
+            size += chunk.length;
+            if (size > 65536) return fail(413, 'request_too_large');
+            chunks.push(chunk);
+          }
+          let changes;
+          try { changes = JSON.parse(Buffer.concat(chunks).toString()); }
+          catch { return fail(400, 'invalid_arguments'); }
+          await setRoutingPolicy(changes);
+        }
+        const body = JSON.stringify({ instanceId, routing_policy: routingPolicy(), routing: routingStatus() });
+        if (Buffer.byteLength(body) > 65536) return fail(503, 'routing_policy_unavailable');
+        res.setHeader('content-type', 'application/json'); res.setHeader('cache-control', 'no-store');
+        res.end(body);
+      } catch (error) {
+        const invalid = ['invalid_arguments', 'invalid_routing_policy', 'invalid_account'].includes(error.code);
+        fail(invalid ? 400 : 503, invalid ? error.code : 'routing_policy_unavailable');
+      } finally { clearTimeout(deadline); }
+      return;
+    }
     if (req.url === '/control/usage' && ['GET', 'POST'].includes(req.method)) {
       if (!controlToken || !equal(req.headers.authorization, `Bearer ${controlToken}`)) return fail(403, 'invalid_control_token');
       if (!usageStatus || !refreshUsage) return fail(501, 'usage_status_unavailable');
@@ -36,6 +63,17 @@ export async function startServer({port=8787, credentials, transport=requestUpst
         res.setHeader('cache-control', 'no-store');
         res.end(body);
       } catch { fail(503, 'usage_status_unavailable'); }
+      return;
+    }
+    const activation = /^\/control\/weekly-activation\/(true|false)$/.exec(req.url);
+    if (activation && req.method === 'POST') {
+      if (!controlToken || !equal(req.headers.authorization, `Bearer ${controlToken}`)) return fail(403, 'invalid_control_token');
+      if (!setWeeklyActivation) return fail(501, 'weekly_activation_unavailable');
+      try {
+        const setting = await setWeeklyActivation(activation[1] === 'true');
+        res.setHeader('content-type', 'application/json'); res.setHeader('cache-control', 'no-store');
+        res.end(JSON.stringify({ instanceId, ...setting }));
+      } catch { fail(503, 'weekly_activation_unavailable'); }
       return;
     }
     const reserve = /^\/control\/reserve-usage\/(true|false)$/.exec(req.url);

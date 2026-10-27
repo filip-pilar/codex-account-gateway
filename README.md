@@ -1,10 +1,10 @@
 # Codex Account Gateway
 
-**Automatically switch ChatGPT accounts for Codex CLI without changing your local endpoint.**
+**Route Codex through multiple ChatGPT accounts, or stay on one account, without changing your local endpoint.**
 
-Keep separate account profiles behind one loopback gateway, with usage visibility in the CLI or native Mac menu-bar app. The gateway switches accounts when weekly remaining reaches **5%** or an included-usage window is exhausted. Active requests finish on their original account.
+Keep separate account profiles behind one loopback gateway, with usage visibility in the CLI or native Mac menu-bar app. In Automatic mode, the gateway switches accounts when weekly remaining reaches **5%** or an included-usage window is exhausted. Active requests finish on their original account.
 
-Optional reserve and per-account credit permissions allow continuing after other included usage is unavailable. Both default off. Delayed or missing usage reports and active requests mean they are not strict spending caps. See [routing and credits](docs/cli.md#automatic-weekly-routing).
+Choose Automatic with explicit account priority and fallback order, or Stay on one account to pause instead of switching. Reserve usage and per-account credit permissions default off. Delayed or missing usage reports and active requests mean they are not strict spending caps. See [routing and credits](docs/cli.md#automatic-weekly-routing).
 
 Use an isolated Codex CLI client or connect your existing Codex configuration through **Use gateway in Codex**. See [connection setup](docs/cli.md#codex-connection); compatibility depends on the client version.
 
@@ -80,6 +80,8 @@ node src/cli.mjs account-add --label Work --json
 ```
 
 Use the returned account ID with `login --account ID` and complete the official login. Signed-in profiles join the pool automatically. `account-select --account ID` changes the selection when idle, subject to the routing policy. See [account commands](docs/cli.md#account-selection-and-usage) for usage fields and refresh behavior.
+
+Full usage can have an unstarted weekly timer. The optional **Start unused weekly windows** setting sends one small request when repeated readings indicate this condition, then verifies the reset. It defaults off, consumes quota, preserves account selection, and does not retry failed attempts. See [weekly activation](docs/macos.md#start-unused-weekly-windows).
 
 ## Operation
 
