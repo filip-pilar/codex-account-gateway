@@ -55,7 +55,7 @@ An attempt is saved privately before sending. Failed, cancelled, interrupted, an
 - **Fallback** chooses Pause, Reserve, Credit fallback, Reserve then credits, or Credits then reserve. Reserve uses remaining included allowance below 5%; it never bypasses reported exhaustion. Credit fallback may also use that account’s remaining included allowance because OpenAI determines when credits are charged.
 - **Allow credits** is edited in account details and can stay enabled even when the balance is zero or unknown. The overview’s **Credits allowed** label describes permission; **Credit fallback active** describes the reported routing state. Neither confirms a charge.
 
-Action feedback remains on the relevant page and visible above scrolling content. Account-name validation uses the backend’s 60 UTF-16-unit limit; emoji can occupy multiple units. Missing usage is labeled explicitly, and credit/reset diagnostics remain available in Details.
+Action feedback stays on the relevant page in an overlay; scroll the page to reach content behind it. Account-name validation uses the backend’s 60 UTF-16-unit limit; emoji can occupy multiple units. Missing usage is labeled explicitly, and credit/reset diagnostics remain available in Details.
 
 Policy changes apply to subsequent requests; active requests finish on their captured credentials. Paused fixed routing continues to display its intended account, with last-known usage clearly marked. Usage failures alone do not block otherwise eligible included usage, and unknown startup usage remains an availability preference. These controls are not a spending cap.
 

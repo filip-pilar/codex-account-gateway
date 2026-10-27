@@ -73,7 +73,7 @@ struct GatewayView: View {
     @FocusState private var fieldFocused: Bool
     private var status: GatewayStatus { GatewayStatus(state: model.state, routing: model.routing) }
     private var hasFooter: Bool { [.accounts, .settings, .add, .clientSetup].contains(page) || page == .routing && editingOrder != nil }
-    private var scrollHeight: CGFloat { min(max(1, contentHeight), max(1, panelHeight - 55 - noticeHeight - (hasFooter ? 53 : 0))) }
+    private var scrollHeight: CGFloat { min(max(1, contentHeight), max(1, panelHeight - 55 - (hasFooter ? 53 : 0))) }
     private var priorityDirty: Bool { editingOrder.map { $0 != originalOrder } ?? false }
     private var formSaving: Bool { submittingPage == page }
     private var visibleMessage: String? {
@@ -98,11 +98,6 @@ struct GatewayView: View {
         VStack(spacing: 0) {
             header
             Divider()
-            if !visibleErrors.isEmpty || visibleMessage != nil {
-                notices
-                    .onGeometryChange(for: CGFloat.self) { ceil($0.size.height) } action: { noticeHeight = $0 }
-                    .onDisappear { noticeHeight = 0 }
-            }
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     if let login = model.pendingLogin,
@@ -118,11 +113,25 @@ struct GatewayView: View {
                     guard height != contentHeight else { return }
                     withAnimation(contentHeight == 0 || reduceMotion ? nil : .easeInOut(duration: 0.15)) { contentHeight = height }
                 }
+                .padding(.bottom, noticeHeight)
             }
             .frame(height: scrollHeight, alignment: .top)
             .scrollBounceBehavior(.basedOnSize)
             .defaultScrollAnchor(.top)
             .id(page)
+            .overlay(alignment: .bottom) {
+                if !visibleErrors.isEmpty || visibleMessage != nil {
+                    ScrollView {
+                        notices.frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxHeight: max(1, scrollHeight * 0.6))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .background(.regularMaterial)
+                    .overlay(alignment: .top) { Divider() }
+                    .onGeometryChange(for: CGFloat.self) { ceil($0.size.height) } action: { noticeHeight = $0 }
+                    .onDisappear { noticeHeight = 0 }
+                }
+            }
             if hasFooter { Divider(); footer }
         }
         .frame(width: 380)
@@ -177,7 +186,9 @@ struct GatewayView: View {
                 .keyboardShortcut(.cancelAction)
             } else { Text(page.title).font(.headline) }
             Spacer(minLength: 4)
-            if model.busy { ProgressView().controlSize(.mini).accessibilityLabel("Working") }
+            Group {
+                if model.busy { ProgressView().controlSize(.mini).accessibilityLabel("Working") }
+            }.frame(width: 16)
             if page == .accounts {
                 HStack(spacing: 5) {
                     Circle().fill(status.tone.color).frame(width: 6, height: 6).accessibilityHidden(true)
